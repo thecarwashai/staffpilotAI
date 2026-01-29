@@ -4,9 +4,11 @@ import requests
 import pandas as pd
 from datetime import datetime
 import math
-from typing import Tuple, Dict, Any, List
+import json
 
 # ---------------- CONFIG ----------------
+
+st.set_page_config(page_title="StaffPilot AI", layout="centered")
 
 MAX_STAFF = 5
 
@@ -18,56 +20,85 @@ TRAFFIC_MULT = {
 }
 
 # ---------------- SUPABASE ----------------
-# Requires SUPABASE_URL and SUPABASE_KEY in Streamlit secrets
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Supabase credentials not found. Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets.")
-    st.stop()
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------------- WEATHER ----------------
 
-@st.cache_data(ttl=60 * 60)  # cache for 1 hour
-def get_lat_lon(location: str) -> Tuple[float, float]:
+@st.cache_data(ttl=1800)
+def get_lat_lon(location):
     url = "https://geocoding-api.open-meteo.com/v1/search"
-    try:
-        res = requests.get(url, params={"name": location, "count": 1}, timeout=10).json()
-        results = res.get("results")
-        if not results:
-            raise ValueError("No geocoding results")
-        return results[0]["latitude"], results[0]["longitude"]
-    except Exception as e:
-        raise RuntimeError(f"Failed to geocode '{location}': {e}")
 
-@st.cache_data(ttl=60 * 30)  # cache for 30 minutes
-def get_weather(lat: float, lon: float) -> Dict[str, Any]:
+    res = requests.get(
+        url,
+        params={"name": location, "count": 1},
+        timeout=10
+    )
+
+    if res.status_code != 200:
+        raise RuntimeError("Geocoding API failed")
+
+    data = res.json()
+
+    if "results" not in data or not data["results"]:
+        raise RuntimeError("Invalid location. Try City + State or ZIP.")
+
+    return (
+        data["results"][0]["latitude"],
+        data["results"][0]["longitude"]
+    )
+
+
+@st.cache_data(ttl=1800)
+def get_weather(lat, lon):
+
     url = "https://api.open-meteo.com/v1/forecast"
+
     params = {
         "latitude": lat,
         "longitude": lon,
         "daily": "precipitation_probability_max,precipitation_sum,temperature_2m_max",
         "temperature_unit": "fahrenheit",
         "precipitation_unit": "inch",
+        "forecast_days": 7,  # 🔥 CRITICAL FIX
         "timezone": "auto"
     }
-    try:
-        res = requests.get(url, params=params, timeout=10).json()
-        daily = res.get("daily")
-        if not daily:
-            raise ValueError("No daily data returned from weather API")
-        return daily
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch weather: {e}")
+
+    res = requests.get(url, params=params, timeout=10)
+
+    if res.status_code != 200:
+        raise RuntimeError("Weather API failed")
+
+    data = res.json()
+
+    if "daily" not in data:
+        raise RuntimeError("Weather returned no daily data")
+
+    daily = data["daily"]
+
+    required = [
+        "time",
+        "precipitation_probability_max",
+        "precipitation_sum",
+        "temperature_2m_max"
+    ]
+
+    for r in required:
+        if r not in daily or not daily[r]:
+            raise RuntimeError(f"Weather missing field: {r}")
+
+    return daily
+
 
 # ---------------- FORECAST ENGINE ----------------
 
-def weather_factor(prob: float, rain: float, temp: float) -> float:
+def weather_factor(prob, rain, temp):
+
     factor = 1.0
 
-    # Rain suppression
     if prob >= 80 or rain >= 0.25:
         factor *= 0.55
     elif prob >= 60 or rain >= 0.10:
@@ -75,7 +106,6 @@ def weather_factor(prob: float, rain: float, temp: float) -> float:
     elif prob >= 40:
         factor *= 0.9
 
-    # Temperature
     if temp < 40:
         factor *= 0.8
     elif temp < 50:
@@ -85,7 +115,9 @@ def weather_factor(prob: float, rain: float, temp: float) -> float:
 
     return factor
 
-def rebound_boost(prev_prob: float, prev_rain: float) -> float:
+
+def rebound_boost(prev_prob, prev_rain):
+
     if prev_prob >= 80 or prev_rain >= 0.25:
         return 0.30
     elif prev_prob >= 60 or prev_rain >= 0.10:
@@ -95,50 +127,57 @@ def rebound_boost(prev_prob: float, prev_rain: float) -> float:
     return 0.0
 
 
-def forecast_week(site: Dict[str, Any]) -> List[Dict[str, Any]]:
+def forecast_week(site):
+
     weather = get_weather(site["lat"], site["lon"])
 
     baseline = site["baseline"]
+
+    # 🔥 Normalize JSON
+    if isinstance(baseline, str):
+        baseline = json.loads(baseline)
+
+    baseline = {k.lower(): v for k, v in baseline.items()}
+
     member_floor = site.get("member_washes", 0)
     traffic = TRAFFIC_MULT.get(site.get("traffic", "Medium"), 1.0)
 
     forecasts = []
 
-    prev_prob = 0.0
-    prev_rain = 0.0
+    prev_prob = 0
+    prev_rain = 0
 
-    # Safeguard: ensure weather arrays are present and have 7 entries
-    times = weather.get("time", [])
-    probs = weather.get("precipitation_probability_max", [])
-    rains = weather.get("precipitation_sum", [])
-    temps = weather.get("temperature_2m_max", [])
+    times = weather["time"]
+    probs = weather["precipitation_probability_max"]
+    rains = weather["precipitation_sum"]
+    temps = weather["temperature_2m_max"]
 
-    days_count = min(7, len(times), len(probs), len(rains), len(temps))
+    for i in range(7):
 
-    for i in range(days_count):
-        day = times[i]
+        day_iso = times[i]
         prob = float(probs[i])
         rain = float(rains[i])
         temp = float(temps[i])
 
-        dow = datetime.fromisoformat(day).strftime("%A")
-        base = baseline.get(dow, 0)
+        dow = datetime.fromisoformat(day_iso).strftime("%A").lower()
+
+        base = baseline.get(dow, 120)  # fallback default
 
         retail = max(base - member_floor, 0)
 
         factor = weather_factor(prob, rain, temp)
 
-        # bounce-back
+        # Bounce-back logic
         if prob < 30 and temp > 50:
             factor *= (1 + rebound_boost(prev_prob, prev_rain))
 
         cars = int(member_floor + retail * traffic * factor)
 
         forecasts.append({
-            "day": dow,
-            "cars": cars,
-            "prob": prob,
-            "temp": temp
+            "Day": dow.title(),
+            "Forecast Cars": cars,
+            "Rain %": prob,
+            "Temp": temp
         })
 
         prev_prob = prob
@@ -146,17 +185,22 @@ def forecast_week(site: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     return forecasts
 
+
 # ---------------- STAFFING ----------------
 
-def staff_needed(cars: int, hours: int, prep: bool) -> int:
-    peak_hour_cars = cars * 0.12  # assume peak hour is ~12%
+def staff_needed(cars, hours, prep):
+
+    peak_hour = cars * 0.12
+
     cpsh = 8 if prep else 11
-    staff = math.ceil(peak_hour_cars / cpsh) if cpsh > 0 else 0
-    return min(MAX_STAFF, max(0, staff))
+
+    staff = math.ceil(peak_hour / cpsh)
+
+    return min(MAX_STAFF, staff)
+
 
 # ---------------- UI ----------------
 
-st.set_page_config(page_title="StaffPilot AI", layout="centered")
 st.title("🚀 StaffPilot AI")
 
 menu = st.sidebar.selectbox(
@@ -171,111 +215,107 @@ if menu == "Create Site":
     st.header("New Operator Setup")
 
     alias = st.text_input("Site Name")
-
     location = st.text_input("City / ZIP")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        open_hour = st.slider("Opening Hour", 0, 23, 8)
-    with col2:
-        close_hour = st.slider("Closing Hour", 1, 24, 20)
+    open_hour = st.slider("Opening Hour", 0, 23, 8)
+    close_hour = st.slider("Closing Hour", 1, 24, 20)
 
     traffic = st.selectbox("Street Traffic", list(TRAFFIC_MULT.keys()))
+    member_washes = st.number_input("Member Washes / Day", 0, 500, 60)
 
-    member_washes = st.number_input("Estimated Member Washes / Day", 0, 500, 60, step=1)
-
-    min_staff = st.slider("Minimum Staff", 1, 10, 3)
+    min_staff = st.slider("Minimum Staff", 1, 5, 3)
 
     prep = st.checkbox("Prep Every Car?")
     one_loader = st.checkbox("Can operate with one loader?")
 
     st.subheader("Normal Week Cars")
 
-    baseline: Dict[str, int] = {}
-    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    baseline = {}
+
+    days = [
+        "Monday","Tuesday","Wednesday",
+        "Thursday","Friday","Saturday","Sunday"
+    ]
 
     for d in days:
-        baseline[d] = st.number_input(d, 0, 5000, 120, key=f"baseline_{d}")
+        baseline[d] = st.number_input(d, 0, 5000, 120)
 
     if st.button("Create Site"):
-        if not alias.strip():
-            st.warning("Please enter a Site Name.")
-        elif not location.strip():
-            st.warning("Please enter a City / ZIP location.")
-        else:
-            try:
-                lat, lon = get_lat_lon(location)
-            except Exception as e:
-                st.error(f"Geocoding error: {e}")
-            else:
-                payload = {
-                    "alias": alias,
-                    "location": location,
-                    "lat": lat,
-                    "lon": lon,
-                    "open_hour": int(open_hour),
-                    "close_hour": int(close_hour),
-                    "traffic": traffic,
-                    "min_staff": int(min_staff),
-                    "prep": bool(prep),
-                    "one_loader": bool(one_loader),
-                    "member_washes": int(member_washes),
-                    "baseline": baseline
-                }
 
-                try:
-                    res = supabase.table("sites").insert(payload).execute()
-                    # supabase client returns .data or .json depending on version
-                    st.success("Site Created!")
-                    st.json(payload)
-                except Exception as e:
-                    st.error(f"Failed to create site in Supabase: {e}")
+        lat, lon = get_lat_lon(location)
+
+        supabase.table("sites").insert({
+            "alias": alias,
+            "location": location,
+            "lat": lat,
+            "lon": lon,
+            "open_hour": open_hour,
+            "close_hour": close_hour,
+            "traffic": traffic,
+            "min_staff": min_staff,
+            "prep": prep,
+            "one_loader": one_loader,
+            "member_washes": member_washes,
+            "baseline": baseline
+        }).execute()
+
+        st.success("Site Created!")
 
 # ---------------- FORECAST ----------------
 
 if menu == "View Forecast":
 
-    try:
-        res = supabase.table("sites").select("*").execute()
-        sites = res.data if hasattr(res, "data") else res
-    except Exception as e:
-        st.error(f"Failed to fetch sites from Supabase: {e}")
-        st.stop()
+    res = supabase.table("sites").select("*").execute()
+    sites = res.data
 
     if not sites:
         st.warning("Create a site first.")
         st.stop()
 
-    site = st.selectbox("Choose Site", sites, format_func=lambda x: x.get("alias", "Unknown"))
+    site = st.selectbox(
+        "Choose Site",
+        sites,
+        format_func=lambda x: x["alias"]
+    )
 
-    if st.button("Generate 7-Day Forecast"):
+    if st.button("Generate AI Staffing Plan"):
 
         try:
             forecasts = forecast_week(site)
         except Exception as e:
-            st.error(f"Forecast generation failed: {e}")
+            st.error(f"Forecast failed: {e}")
             st.stop()
 
-        hours = max(1, int(site.get("close_hour", 20)) - int(site.get("open_hour", 8)))
+        if not forecasts:
+            st.error("No forecast generated.")
+            st.stop()
+
+        hours = max(1, site["close_hour"] - site["open_hour"])
 
         rows = []
 
         for f in forecasts:
+
             staff = staff_needed(
-                f["cars"],
+                f["Forecast Cars"],
                 hours,
-                site.get("prep", False)
+                site["prep"]
             )
 
-            rows.append({
-                "Day": f["day"],
-                "Forecast Cars": f["cars"],
-                "Peak Staff": max(int(site.get("min_staff", 1)), staff),
-                "Rain %": f["prob"],
-                "Temp (F)": f["temp"]
-            })
+            peak_staff = min(
+                MAX_STAFF,
+                max(site["min_staff"], staff)
+            )
+
+            f["Peak Staff"] = peak_staff
+
+            rows.append(f)
 
         df = pd.DataFrame(rows)
 
         st.dataframe(df, use_container_width=True)
-        st.success("AI Forecast Generated ✅")
+
+        # 🔥 Operators LOVE this
+        st.line_chart(df.set_index("Day")["Forecast Cars"])
+
+        st.success("AI Staffing Plan Generated ✅")
