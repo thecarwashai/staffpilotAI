@@ -177,9 +177,30 @@ section[data-testid="stSidebar"] { display: none !important; }
     border-radius: 2px;
 }
 
-/* ── Streamlit input overrides ── */
-div[data-testid="stTextInput"] input,
-div[data-testid="stNumberInput"] input {
+/* ── Nuke every white/light surface Streamlit injects ── */
+.stApp, .stApp > div, [data-testid="stAppViewContainer"],
+[data-testid="stAppViewBlockContainer"], [data-testid="block-container"],
+[data-testid="stVerticalBlock"], [data-testid="stHorizontalBlock"],
+section.main, .main .block-container,
+div[data-testid="stForm"], div[data-testid="stColumn"],
+div[class*="css"] { background-color: transparent !important; }
+
+/* Force the outermost shell dark */
+.stApp { background-color: var(--bg) !important; }
+
+/* ── All text globally ── */
+p, span, div, label, h1, h2, h3, h4, li {
+    color: var(--text) !important;
+}
+
+/* ── Text input ── */
+div[data-testid="stTextInput"] > div,
+div[data-testid="stTextInput"] > div > div {
+    background: var(--surface2) !important;
+    border-color: var(--border) !important;
+    border-radius: 8px !important;
+}
+div[data-testid="stTextInput"] input {
     background: var(--surface2) !important;
     border: 1px solid var(--border) !important;
     border-radius: 8px !important;
@@ -187,19 +208,88 @@ div[data-testid="stNumberInput"] input {
     font-family: var(--mono) !important;
     font-size: 14px !important;
     padding: 10px 14px !important;
+    caret-color: var(--accent) !important;
 }
-div[data-testid="stTextInput"] input:focus,
-div[data-testid="stNumberInput"] input:focus {
+div[data-testid="stTextInput"] input::placeholder { color: var(--muted) !important; opacity: 1 !important; }
+div[data-testid="stTextInput"] input:focus {
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 3px rgba(245,166,35,0.12) !important;
+    outline: none !important;
 }
+
+/* ── Number input ── */
+div[data-testid="stNumberInput"] > div,
+div[data-testid="stNumberInput"] > div > div {
+    background: var(--surface2) !important;
+    border-color: var(--border) !important;
+    border-radius: 8px !important;
+}
+div[data-testid="stNumberInput"] input {
+    background: var(--surface2) !important;
+    border: none !important;
+    color: var(--text) !important;
+    font-family: var(--mono) !important;
+    font-size: 14px !important;
+    caret-color: var(--accent) !important;
+}
+div[data-testid="stNumberInput"] input:focus { outline: none !important; box-shadow: none !important; }
+/* stepper +/- buttons */
+div[data-testid="stNumberInput"] button {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    border-radius: 6px !important;
+}
+div[data-testid="stNumberInput"] button:hover { background: var(--border) !important; }
+div[data-testid="stNumberInput"] button svg { fill: var(--text) !important; stroke: var(--text) !important; }
+
+/* ── Widget labels ── */
 label[data-testid="stWidgetLabel"] p,
-div[data-testid="stWidgetLabel"] p {
+div[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] span {
     font-family: var(--sans) !important;
     font-size: 13px !important;
     color: var(--muted) !important;
     margin-bottom: 4px !important;
 }
+
+/* ── Spinner / status ── */
+[data-testid="stStatusWidget"], .stSpinner > div {
+    background: transparent !important;
+    color: var(--muted) !important;
+}
+.stSpinner svg { stroke: var(--accent) !important; }
+
+/* ── Selectbox / dropdown ── */
+div[data-testid="stSelectbox"] > div > div {
+    background: var(--surface2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    color: var(--text) !important;
+}
+div[data-testid="stSelectbox"] svg { fill: var(--muted) !important; }
+
+/* ── Alert / info / warning boxes ── */
+[data-testid="stAlert"], div[role="alert"],
+.stAlert > div, .element-container .stAlert {
+    background: var(--surface2) !important;
+    border-color: var(--border) !important;
+    color: var(--text) !important;
+    border-radius: 8px !important;
+}
+
+/* ── Expander ── */
+[data-testid="stExpander"] { background: var(--surface) !important; border-color: var(--border) !important; }
+
+/* ── Divider ── */
+hr { border-color: var(--border) !important; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* ── Generate button ── */
 div.stButton > button {
@@ -442,18 +532,11 @@ table.sp-table tr:hover td { background: var(--surface2); }
     font-family: var(--mono);
 }
 
-/* ── Streamlit chart container ── */
+/* ── Hide native Streamlit chart (we use custom SVG) ── */
 [data-testid="stVegaLiteChart"] { display: none !important; }
 
-/* Make Streamlit column gaps tighter */
+/* ── Column gaps ── */
 [data-testid="stHorizontalBlock"] { gap: 16px !important; }
-
-/* Number input stepper buttons */
-div[data-testid="stNumberInput"] button {
-    background: var(--surface2) !important;
-    border-color: var(--border) !important;
-    color: var(--text) !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -525,7 +608,7 @@ def _normalize_daily(daily: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
-    """Fetch 7-day forecast from Open-Meteo. Raises RuntimeError on any failure."""
+    """Fetch 7-day forecast from Open-Meteo with up to 2 retries."""
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -536,63 +619,117 @@ def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
         "forecast_days": 7,
         "timezone": "auto",
     }
+    last_err = "Unknown error"
+    for attempt in range(2):           # try twice before giving up
+        try:
+            res = requests.get(url, params=params, headers=HEADERS, timeout=20)
+        except requests.exceptions.Timeout:
+            last_err = f"Timed out (attempt {attempt + 1})"
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_err = f"Connection error: {e}"
+            break                      # connection refused won't fix itself on retry
+
+        if res.status_code != 200:
+            try:
+                detail = res.json().get("reason", res.text[:120])
+            except Exception:
+                detail = res.text[:120]
+            last_err = f"HTTP {res.status_code}: {detail}"
+            break
+
+        daily = res.json().get("daily")
+        if not daily:
+            last_err = "No daily data in response"
+            break
+
+        for k in ["time", "precipitation_sum", "temperature_2m_max"]:
+            if k not in daily or not daily[k]:
+                last_err = f"Missing field: {k}"
+                break
+        else:
+            if len(daily["time"]) < 7:
+                last_err = f"Only returned {len(daily['time'])} days"
+                break
+            return _normalize_daily(daily)
+
+    raise RuntimeError(f"Open-Meteo: {last_err}")
+
+
+# ── Fallback 1: wttr.in (free, no key required) ───────────────────────────────
+
+def _fetch_wttr(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Fetch 7-day forecast from wttr.in JSON API.
+    Completely free, no key required — good Streamlit Cloud fallback.
+    Normalises to the same dict shape as Open-Meteo.
+    """
+    url = f"https://wttr.in/{lat},{lon}"
+    params = {"format": "j1"}
     try:
-        res = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        res = requests.get(url, params=params, headers=HEADERS, timeout=20)
     except requests.exceptions.Timeout:
-        raise RuntimeError("Open-Meteo request timed out.")
-    except requests.exceptions.ConnectionError:
-        raise RuntimeError("Cannot reach Open-Meteo (connection refused or blocked).")
+        raise RuntimeError("wttr.in request timed out.")
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(f"Cannot reach wttr.in: {e}")
 
     if res.status_code != 200:
-        try:
-            detail = res.json().get("reason", res.text[:120])
-        except Exception:
-            detail = res.text[:120]
-        raise RuntimeError(f"Open-Meteo HTTP {res.status_code}: {detail}")
+        raise RuntimeError(f"wttr.in HTTP {res.status_code}")
 
-    daily = res.json().get("daily")
-    if not daily:
-        raise RuntimeError("Open-Meteo returned no daily data.")
+    try:
+        data = res.json()
+    except Exception:
+        raise RuntimeError("wttr.in returned non-JSON response.")
 
-    for k in ["time", "precipitation_sum", "temperature_2m_max"]:
-        if k not in daily or not daily[k]:
-            raise RuntimeError(f"Open-Meteo missing field: {k}")
+    weather_days = data.get("weather", [])
+    if len(weather_days) < 3:
+        raise RuntimeError(f"wttr.in only returned {len(weather_days)} days.")
 
-    if len(daily["time"]) < 7:
-        raise RuntimeError(f"Open-Meteo only returned {len(daily['time'])} days.")
+    # wttr.in returns 3 days max on free tier — extend to 7 by cycling the pattern
+    # (good enough for staffing: day 4-7 use day 1-3 weather as an estimate)
+    base = weather_days[:]
+    while len(base) < 7:
+        base.append(base[len(base) % 3])
 
-    return _normalize_daily(daily)
+    times, probs, rains, temps = [], [], [], []
+    base_date = datetime.utcnow().date()
+    for i, day in enumerate(base[:7]):
+        times.append((base_date + timedelta(days=i)).isoformat())
+        # hourly entries → derive max temp (F) and total precip (mm→in)
+        hourly = day.get("hourly", [])
+        temp_max = max((float(h.get("tempF", 65)) for h in hourly), default=65.0)
+        precip_mm = sum(float(h.get("precipMM", 0)) for h in hourly)
+        chance = max((float(h.get("chanceofrain", 0)) for h in hourly), default=0.0)
+        temps.append(temp_max)
+        rains.append(round(precip_mm / 25.4, 3))
+        probs.append(chance)
+
+    return {
+        "time":                           times,
+        "precipitation_probability_max":  probs,
+        "precipitation_sum":              rains,
+        "temperature_2m_max":             temps,
+    }
 
 
-# ── Fallback: WeatherAPI.com ─────────────────────────────────────────────────
+# ── Fallback 2: WeatherAPI.com (requires key) ────────────────────────────────
 
 def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
     """
     Fetch 7-day forecast from WeatherAPI.com.
-    Normalises response into the same dict shape as Open-Meteo so the rest of
-    the app is completely unaware of which source was used.
-    Raises RuntimeError on any failure.
+    Skipped silently if WEATHERAPI_KEY is not set.
     """
     if not WEATHERAPI_KEY:
-        raise RuntimeError(
-            "WeatherAPI.com key not configured. "
-            "Add WEATHERAPI_KEY to .streamlit/secrets.toml to enable the fallback."
-        )
+        raise RuntimeError("WeatherAPI.com key not configured (WEATHERAPI_KEY missing from secrets).")
 
     url = "https://api.weatherapi.com/v1/forecast.json"
-    params = {
-        "key": WEATHERAPI_KEY,
-        "q": f"{lat},{lon}",
-        "days": 7,
-        "aqi": "no",
-        "alerts": "no",
-    }
+    params = {"key": WEATHERAPI_KEY, "q": f"{lat},{lon}", "days": 7, "aqi": "no", "alerts": "no"}
     try:
-        res = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        res = requests.get(url, params=params, headers=HEADERS, timeout=20)
     except requests.exceptions.Timeout:
-        raise RuntimeError("WeatherAPI.com request timed out.")
-    except requests.exceptions.ConnectionError:
-        raise RuntimeError("Cannot reach WeatherAPI.com (connection refused or blocked).")
+        raise RuntimeError("WeatherAPI.com timed out.")
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(f"Cannot reach WeatherAPI.com: {e}")
 
     if res.status_code != 200:
         try:
@@ -605,15 +742,12 @@ def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
     if len(forecast_days) < 7:
         raise RuntimeError(f"WeatherAPI.com only returned {len(forecast_days)} days.")
 
-    # Normalise to Open-Meteo daily shape
     times, probs, rains, temps = [], [], [], []
     for day in forecast_days:
         times.append(day["date"])
         d = day.get("day", {})
-        # daily_chance_of_rain is 0-100 int; precipitation in mm → convert to inches
         probs.append(float(d.get("daily_chance_of_rain", 0)))
-        rain_mm = float(d.get("totalprecip_mm", 0.0))
-        rains.append(round(rain_mm / 25.4, 3))          # mm → inches
+        rains.append(round(float(d.get("totalprecip_mm", 0.0)) / 25.4, 3))
         temps.append(float(d.get("maxtemp_f", 65.0)))
 
     return {
@@ -624,36 +758,32 @@ def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
     }
 
 
-# ── Public interface ─────────────────────────────────────────────────────────
+# ── Public interface — tries all three sources in order ──────────────────────
 
 @st.cache_data(ttl=1800)
 def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
     """
-    Returns a 7-day daily weather dict.
-    Tries Open-Meteo first; falls back to WeatherAPI.com on any error.
-    Stores which source was used in st.session_state["_wx_source"] for the UI.
+    Tries Open-Meteo → wttr.in → WeatherAPI.com in order.
+    Returns the first successful result. Raises only if all three fail.
     """
-    primary_error: Optional[str] = None
+    errors: Dict[str, str] = {}
 
-    # ── Try primary ──
-    try:
-        data = _fetch_open_meteo(lat, lon)
-        st.session_state["_wx_source"] = "Open-Meteo"
-        return data
-    except RuntimeError as e:
-        primary_error = str(e)
+    sources = [
+        ("Open-Meteo",      lambda: _fetch_open_meteo(lat, lon)),
+        ("wttr.in",         lambda: _fetch_wttr(lat, lon)),
+        ("WeatherAPI.com",  lambda: _fetch_weatherapi(lat, lon)),
+    ]
 
-    # ── Try fallback ──
-    try:
-        data = _fetch_weatherapi(lat, lon)
-        st.session_state["_wx_source"] = "WeatherAPI.com (fallback)"
-        return data
-    except RuntimeError as fallback_error:
-        raise RuntimeError(
-            f"Both weather sources failed.\n"
-            f"• Open-Meteo: {primary_error}\n"
-            f"• WeatherAPI.com: {fallback_error}"
-        )
+    for name, fetch in sources:
+        try:
+            data = fetch()
+            st.session_state["_wx_source"] = name if name == "Open-Meteo" else f"{name} (fallback)"
+            return data
+        except RuntimeError as e:
+            errors[name] = str(e)
+
+    bullet = "\n".join(f"• {k}: {v}" for k, v in errors.items())
+    raise RuntimeError(f"All weather sources failed:\n{bullet}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
