@@ -1,64 +1,14 @@
 # staffpilot.py
-# Streamlit + Supabase single-file webapp
-#
-# ✅ Title branding: "StaffPilot AI - Architected by Gopi Chand"
-# ✅ Mode 1: ⚡ Instant Forecast (ZIP/City + Lowest/Avg/Highest cars guardrails)
-#    - Uses: day-of-week curve + weather suppression + bounce-back
-#    - Shows: Expected Change % (weather-only) + Weather Driver
-#    - Shows: transparency note about error due to missing promos/traffic/local events
-#
-# ✅ Mode 2: 🚀 Full AI Mode (Supabase sites)
-#    - Uses: site baseline Mon–Sun + membership + traffic + weather + bounce-back
-#    - Self-learning: bias + rain_sensitivity tuned from forecast vs actual
-#    - Stores forecasts (per site, per date) + actuals (privacy-safe)
-#    - Accuracy dashboard: rolling 7/14/30-day MAPE + table + chart
-#
-# ✅ Hard cap: max staff = 5
+# StaffPilot AI - Instant Forecast Mode
+# Architected by Gopi Chand
 #
 # Install:
-#   pip install streamlit supabase requests pandas
+#   pip install streamlit requests pandas
 #
-# Streamlit secrets (.streamlit/secrets.toml):
-#   SUPABASE_URL="YOUR_SUPABASE_URL"
-#   SUPABASE_KEY="YOUR_SUPABASE_ANON_KEY"
-#
-# -------------------- SUPABASE SQL (run once) --------------------
-# -- Sites table
-# create table if not exists sites (
-#   id uuid primary key default gen_random_uuid(),
-#   alias text,
-#   location text,
-#   lat double precision,
-#   lon double precision,
-#   open_hour int,
-#   close_hour int,
-#   traffic text,
-#   min_staff int,
-#   prep boolean,
-#   one_loader boolean,
-#   member_washes int,
-#   baseline jsonb,
-#   bias double precision default 1.0,
-#   rain_sensitivity double precision default 1.0,
-#   created_at timestamp default now()
-# );
-#
-# -- Daily metrics: stores forecast and actual (privacy-safe)
-# create table if not exists daily_metrics (
-#   id uuid primary key default gen_random_uuid(),
-#   site_id uuid references sites(id) on delete cascade,
-#   day date not null,
-#   forecast_cars int,
-#   actual_cars int,
-#   expected_change_pct int,
-#   weather_driver text,
-#   precip_prob int,
-#   precip_in double precision,
-#   temp_f double precision,
-#   created_at timestamp default now(),
-#   unique(site_id, day)
-# );
-# ---------------------------------------------------------------
+# Primary weather: Open-Meteo (free, no key required).
+# Fallback weather: WeatherAPI.com (free tier, requires WEATHERAPI_KEY in secrets).
+#   Get a free key at https://www.weatherapi.com/signup.aspx
+#   Add to .streamlit/secrets.toml:  WEATHERAPI_KEY = "your_key_here"
 
 import json
 import math
@@ -68,63 +18,514 @@ from typing import Dict, Any, Tuple, List, Optional
 import pandas as pd
 import requests
 import streamlit as st
-from supabase import create_client
 
-# ---------------- CONFIG ----------------
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
 
-st.set_page_config(page_title="StaffPilot AI", layout="wide")
-st.title("🚀 StaffPilot AI - Architected by Gopi Chand")
+st.set_page_config(
+    page_title="StaffPilot AI",
+    page_icon="🚗",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CUSTOM CSS — Dark operational dashboard, monospace + clean sans, amber accent
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+
+/* ── Root tokens ── */
+:root {
+    --bg:        #0a0c0f;
+    --surface:   #111418;
+    --surface2:  #181c22;
+    --border:    #232830;
+    --accent:    #f5a623;
+    --accent2:   #e8870a;
+    --green:     #22c55e;
+    --red:       #ef4444;
+    --blue:      #3b82f6;
+    --text:      #e8eaf0;
+    --muted:     #6b7280;
+    --mono:      'IBM Plex Mono', monospace;
+    --sans:      'IBM Plex Sans', sans-serif;
+}
+
+/* ── Global resets ── */
+html, body, [class*="css"] {
+    font-family: var(--sans) !important;
+    background-color: var(--bg) !important;
+    color: var(--text) !important;
+}
+
+/* Hide Streamlit chrome */
+#MainMenu, footer, header { visibility: hidden; }
+.block-container { padding: 0 !important; max-width: 100% !important; }
+section[data-testid="stSidebar"] { display: none !important; }
+
+/* ── Top nav bar ── */
+.sp-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 48px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+.sp-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.sp-logo-mark {
+    width: 36px; height: 36px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-family: var(--mono); font-weight: 600;
+    color: #000;
+}
+.sp-logo-text {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text);
+}
+.sp-logo-sub {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-top: 2px;
+}
+.sp-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: rgba(245,166,35,0.12);
+    color: var(--accent);
+    border: 1px solid rgba(245,166,35,0.30);
+    border-radius: 20px;
+    padding: 4px 14px;
+    letter-spacing: 0.06em;
+}
+
+/* ── Page wrapper ── */
+.sp-page {
+    padding: 40px 48px 80px;
+    max-width: 1280px;
+    margin: 0 auto;
+}
+
+/* ── Section heading ── */
+.sp-section-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+}
+.sp-section-h2 {
+    font-family: var(--sans);
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 4px;
+    line-height: 1.2;
+}
+.sp-section-desc {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.6;
+    max-width: 640px;
+    margin-bottom: 32px;
+}
+
+/* ── Input card ── */
+.sp-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 20px;
+}
+.sp-card-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.sp-card-title::before {
+    content: '';
+    display: inline-block;
+    width: 3px; height: 14px;
+    background: var(--accent);
+    border-radius: 2px;
+}
+
+/* ── Streamlit input overrides ── */
+div[data-testid="stTextInput"] input,
+div[data-testid="stNumberInput"] input {
+    background: var(--surface2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    color: var(--text) !important;
+    font-family: var(--mono) !important;
+    font-size: 14px !important;
+    padding: 10px 14px !important;
+}
+div[data-testid="stTextInput"] input:focus,
+div[data-testid="stNumberInput"] input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(245,166,35,0.12) !important;
+}
+label[data-testid="stWidgetLabel"] p,
+div[data-testid="stWidgetLabel"] p {
+    font-family: var(--sans) !important;
+    font-size: 13px !important;
+    color: var(--muted) !important;
+    margin-bottom: 4px !important;
+}
+
+/* ── Generate button ── */
+div.stButton > button {
+    background: var(--accent) !important;
+    color: #000 !important;
+    font-family: var(--mono) !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.08em !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 12px 32px !important;
+    cursor: pointer !important;
+    transition: background 0.15s, transform 0.1s !important;
+    width: 100% !important;
+    margin-top: 8px !important;
+}
+div.stButton > button:hover {
+    background: var(--accent2) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ── Metric strip ── */
+.sp-metrics-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+}
+.sp-metric {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 22px;
+    position: relative;
+    overflow: hidden;
+}
+.sp-metric::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+}
+.sp-metric.green::after { background: var(--green); }
+.sp-metric.red::after   { background: var(--red); }
+.sp-metric.blue::after  { background: var(--blue); }
+
+.sp-metric-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+.sp-metric-value {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1;
+}
+.sp-metric-sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+}
+
+/* ── Forecast table ── */
+.sp-table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+.sp-table-header {
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.sp-table-header::before {
+    content: '';
+    display: inline-block;
+    width: 3px; height: 14px;
+    background: var(--accent);
+    border-radius: 2px;
+}
+table.sp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+table.sp-table th {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 20px;
+    text-align: left;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+}
+table.sp-table td {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    vertical-align: middle;
+}
+table.sp-table tr:last-child td { border-bottom: none; }
+table.sp-table tr:hover td { background: var(--surface2); }
+
+/* Day name */
+.day-name { font-weight: 600; color: var(--text); }
+.day-date { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* Cars bar */
+.cars-bar-wrap { display: flex; align-items: center; gap: 10px; }
+.cars-bar-bg {
+    flex: 1; height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    max-width: 100px;
+}
+.cars-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+}
+.cars-val { min-width: 42px; text-align: right; }
+
+/* Staff pips */
+.staff-pips { display: flex; gap: 4px; }
+.pip {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+.pip.empty {
+    background: transparent;
+    border: 1px solid var(--border);
+}
+
+/* Weather pill */
+.wx-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text);
+    white-space: nowrap;
+}
+.wx-pill.rain   { border-color: #3b82f6; color: #93c5fd; background: rgba(59,130,246,0.08); }
+.wx-pill.clear  { border-color: #22c55e; color: #86efac; background: rgba(34,197,94,0.08); }
+.wx-pill.cold   { border-color: #818cf8; color: #c7d2fe; background: rgba(129,140,248,0.08); }
+.wx-pill.heat   { border-color: #f97316; color: #fdba74; background: rgba(249,115,22,0.08); }
+
+/* Impact badge */
+.impact-neg { color: var(--red); font-weight: 600; }
+.impact-pos { color: var(--green); font-weight: 600; }
+.impact-neu { color: var(--muted); }
+
+/* ── Summary panel ── */
+.sp-summary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 24px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+}
+.sp-summary-item {}
+.sp-summary-item-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+.sp-summary-item-val {
+    font-family: var(--sans);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* ── Confidence banner ── */
+.sp-confidence {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: rgba(245,166,35,0.07);
+    border: 1px solid rgba(245,166,35,0.22);
+    border-radius: 10px;
+    padding: 14px 20px;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 28px;
+}
+.sp-confidence strong { color: var(--accent); }
+.sp-conf-icon { font-size: 18px; }
+
+/* ── Disclaimer ── */
+.sp-disclaimer {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    padding: 14px 20px;
+    background: var(--surface2);
+    border-left: 3px solid var(--border);
+    border-radius: 0 8px 8px 0;
+    margin-top: 12px;
+}
+
+/* ── Error ── */
+.sp-error {
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 10px;
+    padding: 16px 20px;
+    color: #fca5a5;
+    font-size: 13px;
+    font-family: var(--mono);
+}
+
+/* ── Streamlit chart container ── */
+[data-testid="stVegaLiteChart"] { display: none !important; }
+
+/* Make Streamlit column gaps tighter */
+[data-testid="stHorizontalBlock"] { gap: 16px !important; }
+
+/* Number input stepper buttons */
+div[data-testid="stNumberInput"] button {
+    background: var(--surface2) !important;
+    border-color: var(--border) !important;
+    color: var(--text) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
 
 MAX_STAFF = 5
 
-TRAFFIC_MULT = {
-    "Low": 0.90,
-    "Medium": 1.00,
-    "High": 1.10,
-    "Very High": 1.20,
-}
-
-# Industry-ish weekday/weekend behavior (for Quick Mode)
 DOW_MULT = {
-    "Monday": 0.72,
-    "Tuesday": 0.78,
+    "Monday":    0.72,
+    "Tuesday":   0.78,
     "Wednesday": 0.85,
-    "Thursday": 0.92,
-    "Friday": 1.05,
-    "Saturday": 1.28,
-    "Sunday": 1.15,
+    "Thursday":  0.92,
+    "Friday":    1.05,
+    "Saturday":  1.28,
+    "Sunday":    1.15,
 }
 
-# Quick-mode staffing capacity (cars per staff-hour)
 QUICK_CPSH = 9.5
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WEATHER HELPERS  (Primary: Open-Meteo  |  Fallback: WeatherAPI.com)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ---------------- SUPABASE ----------------
+HEADERS = {"User-Agent": "StaffPilotAI/1.0 (streamlit-app; contact@staffpilot.ai)"}
 
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# WeatherAPI key — optional; enables fallback if Open-Meteo fails
+WEATHERAPI_KEY: str = st.secrets.get("WEATHERAPI_KEY", "")
 
 
-# ---------------- WEATHER (Open-Meteo) ----------------
+# ── Geocoding ────────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=60 * 60)
+@st.cache_data(ttl=3600)
 def get_lat_lon(location: str) -> Tuple[float, float]:
+    """Resolve ZIP / city to (lat, lon) via Open-Meteo geocoding."""
     url = "https://geocoding-api.open-meteo.com/v1/search"
-    res = requests.get(url, params={"name": location, "count": 1}, timeout=10)
+    try:
+        res = requests.get(url, params={"name": location, "count": 1},
+                           headers=HEADERS, timeout=15)
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Geocoding request timed out. Check your network.")
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError("Cannot reach geocoding service. Check network settings.")
     if res.status_code != 200:
-        raise RuntimeError("Geocoding API failed.")
-    data = res.json()
-    results = data.get("results") or []
+        raise RuntimeError(f"Geocoding API returned HTTP {res.status_code}.")
+    results = res.json().get("results") or []
     if not results:
-        raise RuntimeError("Location not found. Try ZIP or 'City, State'.")
+        raise RuntimeError("Location not found. Try a ZIP code or 'City, State'.")
     return float(results[0]["latitude"]), float(results[0]["longitude"])
 
 
-@st.cache_data(ttl=60 * 30)
-def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
+# ── Primary: Open-Meteo ───────────────────────────────────────────────────────
+
+def _normalize_daily(daily: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill nulls and validate shape. Returns cleaned daily dict."""
+    n = len(daily["time"])
+    prob_raw = daily.get("precipitation_probability_max") or [None] * n
+    daily["precipitation_probability_max"] = [
+        float(v) if v is not None else 0.0 for v in prob_raw
+    ]
+    daily["precipitation_sum"] = [
+        float(v) if v is not None else 0.0 for v in daily["precipitation_sum"]
+    ]
+    daily["temperature_2m_max"] = [
+        float(v) if v is not None else 65.0 for v in daily["temperature_2m_max"]
+    ]
+    return daily
+
+
+def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
+    """Fetch 7-day forecast from Open-Meteo. Raises RuntimeError on any failure."""
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -132,140 +533,201 @@ def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
         "daily": "precipitation_probability_max,precipitation_sum,temperature_2m_max",
         "temperature_unit": "fahrenheit",
         "precipitation_unit": "inch",
-        "forecast_days": 7,   # critical: force 7 days
+        "forecast_days": 7,
         "timezone": "auto",
     }
-    res = requests.get(url, params=params, timeout=10)
+    try:
+        res = requests.get(url, params=params, headers=HEADERS, timeout=15)
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Open-Meteo request timed out.")
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError("Cannot reach Open-Meteo (connection refused or blocked).")
+
     if res.status_code != 200:
-        raise RuntimeError("Weather API failed.")
-    data = res.json()
-    daily = data.get("daily")
+        try:
+            detail = res.json().get("reason", res.text[:120])
+        except Exception:
+            detail = res.text[:120]
+        raise RuntimeError(f"Open-Meteo HTTP {res.status_code}: {detail}")
+
+    daily = res.json().get("daily")
     if not daily:
-        raise RuntimeError("Weather returned no daily data.")
-    required = ["time", "precipitation_probability_max", "precipitation_sum", "temperature_2m_max"]
-    for k in required:
+        raise RuntimeError("Open-Meteo returned no daily data.")
+
+    for k in ["time", "precipitation_sum", "temperature_2m_max"]:
         if k not in daily or not daily[k]:
-            raise RuntimeError(f"Weather missing field: {k}")
-    if min(len(daily["time"]), len(daily["precipitation_probability_max"]), len(daily["precipitation_sum"]), len(daily["temperature_2m_max"])) < 7:
-        raise RuntimeError("Weather did not return a full 7-day forecast.")
-    return daily
+            raise RuntimeError(f"Open-Meteo missing field: {k}")
+
+    if len(daily["time"]) < 7:
+        raise RuntimeError(f"Open-Meteo only returned {len(daily['time'])} days.")
+
+    return _normalize_daily(daily)
 
 
-# ---------------- EXPLAINABLE WEATHER IMPACT ----------------
+# ── Fallback: WeatherAPI.com ─────────────────────────────────────────────────
 
-def weather_impact_percent(prob: float, rain_in: float, temp_f: float) -> Tuple[int, str]:
+def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
     """
-    Returns (impact_pct, reason). impact_pct is weather-only delta vs "neutral day".
-    Negative = expected drop, Positive = expected lift.
+    Fetch 7-day forecast from WeatherAPI.com.
+    Normalises response into the same dict shape as Open-Meteo so the rest of
+    the app is completely unaware of which source was used.
+    Raises RuntimeError on any failure.
     """
+    if not WEATHERAPI_KEY:
+        raise RuntimeError(
+            "WeatherAPI.com key not configured. "
+            "Add WEATHERAPI_KEY to .streamlit/secrets.toml to enable the fallback."
+        )
+
+    url = "https://api.weatherapi.com/v1/forecast.json"
+    params = {
+        "key": WEATHERAPI_KEY,
+        "q": f"{lat},{lon}",
+        "days": 7,
+        "aqi": "no",
+        "alerts": "no",
+    }
+    try:
+        res = requests.get(url, params=params, headers=HEADERS, timeout=15)
+    except requests.exceptions.Timeout:
+        raise RuntimeError("WeatherAPI.com request timed out.")
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError("Cannot reach WeatherAPI.com (connection refused or blocked).")
+
+    if res.status_code != 200:
+        try:
+            detail = res.json().get("error", {}).get("message", res.text[:120])
+        except Exception:
+            detail = res.text[:120]
+        raise RuntimeError(f"WeatherAPI.com HTTP {res.status_code}: {detail}")
+
+    forecast_days = res.json().get("forecast", {}).get("forecastday", [])
+    if len(forecast_days) < 7:
+        raise RuntimeError(f"WeatherAPI.com only returned {len(forecast_days)} days.")
+
+    # Normalise to Open-Meteo daily shape
+    times, probs, rains, temps = [], [], [], []
+    for day in forecast_days:
+        times.append(day["date"])
+        d = day.get("day", {})
+        # daily_chance_of_rain is 0-100 int; precipitation in mm → convert to inches
+        probs.append(float(d.get("daily_chance_of_rain", 0)))
+        rain_mm = float(d.get("totalprecip_mm", 0.0))
+        rains.append(round(rain_mm / 25.4, 3))          # mm → inches
+        temps.append(float(d.get("maxtemp_f", 65.0)))
+
+    return {
+        "time":                           times,
+        "precipitation_probability_max":  probs,
+        "precipitation_sum":              rains,
+        "temperature_2m_max":             temps,
+    }
+
+
+# ── Public interface ─────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=1800)
+def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Returns a 7-day daily weather dict.
+    Tries Open-Meteo first; falls back to WeatherAPI.com on any error.
+    Stores which source was used in st.session_state["_wx_source"] for the UI.
+    """
+    primary_error: Optional[str] = None
+
+    # ── Try primary ──
+    try:
+        data = _fetch_open_meteo(lat, lon)
+        st.session_state["_wx_source"] = "Open-Meteo"
+        return data
+    except RuntimeError as e:
+        primary_error = str(e)
+
+    # ── Try fallback ──
+    try:
+        data = _fetch_weatherapi(lat, lon)
+        st.session_state["_wx_source"] = "WeatherAPI.com (fallback)"
+        return data
+    except RuntimeError as fallback_error:
+        raise RuntimeError(
+            f"Both weather sources failed.\n"
+            f"• Open-Meteo: {primary_error}\n"
+            f"• WeatherAPI.com: {fallback_error}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORECAST LOGIC
+# ─────────────────────────────────────────────────────────────────────────────
+
+def weather_impact_percent(prob: float, rain_in: float, temp_f: float) -> Tuple[int, str, str]:
     impact = 0
     reasons = []
+    category = "clear"
 
-    # Rain impact
     if prob >= 80 or rain_in >= 0.25:
-        impact -= 45
-        reasons.append("Heavy Rain")
+        impact -= 45; reasons.append("Heavy Rain"); category = "rain"
     elif prob >= 60 or rain_in >= 0.10:
-        impact -= 25
-        reasons.append("Moderate Rain")
+        impact -= 25; reasons.append("Moderate Rain"); category = "rain"
     elif prob >= 40:
-        impact -= 12
-        reasons.append("Light Rain")
+        impact -= 12; reasons.append("Light Rain"); category = "rain"
     else:
         reasons.append("Clear")
 
-    # Temperature adjustments (tuned for car wash behavior)
     if temp_f < 40:
-        impact -= 20
-        reasons.append("Cold")
+        impact -= 20; reasons.append("Cold"); category = "cold" if category == "clear" else category
     elif temp_f < 50:
-        impact -= 10
-        reasons.append("Cool")
+        impact -= 10; reasons.append("Cool")
     elif 55 <= temp_f <= 82:
-        impact += 6
-        reasons.append("Ideal Temps")
+        impact += 6; reasons.append("Ideal Temps")
     elif temp_f > 90:
-        impact -= 5
-        reasons.append("Extreme Heat")
+        impact -= 5; reasons.append("Extreme Heat"); category = "heat" if category == "clear" else category
 
-    return int(impact), " + ".join(reasons)
+    return int(impact), " + ".join(reasons), category
 
 
 def weather_factor(prob: float, rain_in: float, temp_f: float) -> float:
-    """Model multiplier derived from weather (1.0 = neutral)."""
     factor = 1.0
-
-    # Rain suppression
-    if prob >= 80 or rain_in >= 0.25:
-        factor *= 0.55
-    elif prob >= 60 or rain_in >= 0.10:
-        factor *= 0.75
-    elif prob >= 40:
-        factor *= 0.90
-
-    # Temperature
-    if temp_f < 40:
-        factor *= 0.80
-    elif temp_f < 50:
-        factor *= 0.90
-    elif 55 <= temp_f <= 82:
-        factor *= 1.06
-    elif temp_f > 90:
-        factor *= 0.97
-
+    if prob >= 80 or rain_in >= 0.25:    factor *= 0.55
+    elif prob >= 60 or rain_in >= 0.10:  factor *= 0.75
+    elif prob >= 40:                     factor *= 0.90
+    if temp_f < 40:    factor *= 0.80
+    elif temp_f < 50:  factor *= 0.90
+    elif 55 <= temp_f <= 82: factor *= 1.06
+    elif temp_f > 90:  factor *= 0.97
     return factor
 
 
-def rebound_boost(prev_prob: float, prev_rain_in: float) -> float:
-    """Bounce-back boost applied on a good wash day after a rainy day."""
-    if prev_prob >= 80 or prev_rain_in >= 0.25:
-        return 0.30
-    if prev_prob >= 60 or prev_rain_in >= 0.10:
-        return 0.20
-    if prev_prob >= 40:
-        return 0.10
+def rebound_boost(prev_prob: float, prev_rain: float) -> float:
+    if prev_prob >= 80 or prev_rain >= 0.25: return 0.30
+    if prev_prob >= 60 or prev_rain >= 0.10: return 0.20
+    if prev_prob >= 40: return 0.10
     return 0.0
 
-
-def clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
-
-
-def parse_baseline(baseline: Any) -> Dict[str, int]:
-    if baseline is None:
-        return {}
-    if isinstance(baseline, str):
-        baseline = json.loads(baseline)
-    return {str(k).strip().lower(): int(v) for k, v in baseline.items()}
-
-
-# ---------------- FORECAST: QUICK MODE ----------------
 
 def forecast_week_quick(location: str, min_cars: int, avg_cars: int, max_cars: int) -> List[Dict[str, Any]]:
     lat, lon = get_lat_lon(location)
     w = get_weather_7d(lat, lon)
-
     out = []
     prev_prob = 0.0
     prev_rain = 0.0
 
     for i in range(7):
         day_iso = w["time"][i]
-        prob = float(w["precipitation_probability_max"][i])
-        rain_in = float(w["precipitation_sum"][i])
-        temp_f = float(w["temperature_2m_max"][i])
+        prob     = float(w["precipitation_probability_max"][i])
+        rain_in  = float(w["precipitation_sum"][i])
+        temp_f   = float(w["temperature_2m_max"][i])
 
         dow = datetime.fromisoformat(day_iso).strftime("%A")
         dow_factor = DOW_MULT.get(dow, 1.0)
 
-        impact_pct, reason = weather_impact_percent(prob, rain_in, temp_f)
+        impact_pct, reason, wx_cat = weather_impact_percent(prob, rain_in, temp_f)
         wf = weather_factor(prob, rain_in, temp_f)
 
-        # Bounce-back on good wash day
         if prob < 30 and temp_f > 50:
             wf *= (1 + rebound_boost(prev_prob, prev_rain))
 
-        raw = avg_cars * dow_factor * wf
+        raw  = avg_cars * dow_factor * wf
         cars = int(max(min_cars, min(raw, max_cars)))
 
         peak_hour = cars * 0.12
@@ -273,509 +735,283 @@ def forecast_week_quick(location: str, min_cars: int, avg_cars: int, max_cars: i
         staff = min(MAX_STAFF, max(0, staff))
 
         out.append({
-            "Day": dow,
-            "Date": day_iso,
-            "Forecast Cars": cars,
-            "Peak Staff": staff,
-            "Expected Change %": impact_pct,
-            "Weather Driver": reason,
-            "Rain %": int(prob),
-            "Rain (in)": round(rain_in, 2),
-            "Temp (F)": round(temp_f, 1),
+            "dow":      dow,
+            "date":     day_iso,
+            "cars":     cars,
+            "staff":    staff,
+            "impact":   impact_pct,
+            "reason":   reason,
+            "wx_cat":   wx_cat,
+            "rain_pct": int(prob),
+            "rain_in":  round(rain_in, 2),
+            "temp_f":   round(temp_f, 1),
         })
-
         prev_prob = prob
         prev_rain = rain_in
 
     return out
 
 
-# ---------------- FORECAST: FULL MODE ----------------
-
-def staff_needed_full(cars: int, prep: bool) -> int:
-    peak_hour = cars * 0.12
-    cpsh = 8 if prep else 11
-    staff = math.ceil(peak_hour / cpsh) if cpsh > 0 else 0
-    return min(MAX_STAFF, max(0, staff))
+def confidence_label(rows: List[Dict]) -> str:
+    avg_rain = sum(r["rain_pct"] for r in rows) / len(rows) if rows else 0
+    if avg_rain >= 60: return "MEDIUM — weather-heavy week"
+    if avg_rain >= 35: return "HIGH — some variability"
+    return "HIGH — stable conditions"
 
 
-def forecast_week_full(site: Dict[str, Any]) -> List[Dict[str, Any]]:
-    w = get_weather_7d(site["lat"], site["lon"])
+# ─────────────────────────────────────────────────────────────────────────────
+# HTML BUILDERS
+# ─────────────────────────────────────────────────────────────────────────────
 
-    baseline = parse_baseline(site.get("baseline"))
-    member_floor = int(site.get("member_washes", 0))
-    traffic_mult = TRAFFIC_MULT.get(site.get("traffic", "Medium"), 1.0)
-
-    bias = float(site.get("bias", 1.0))
-    rain_sens = float(site.get("rain_sensitivity", 1.0))
-
-    out = []
-    prev_prob = 0.0
-    prev_rain = 0.0
-
-    for i in range(7):
-        day_iso = w["time"][i]
-        prob = float(w["precipitation_probability_max"][i])
-        rain_in = float(w["precipitation_sum"][i])
-        temp_f = float(w["temperature_2m_max"][i])
-
-        dow_name = datetime.fromisoformat(day_iso).strftime("%A")
-        dow_key = dow_name.lower()
-        base = int(baseline.get(dow_key, 0))
-
-        impact_pct, reason = weather_impact_percent(prob, rain_in, temp_f)
-
-        retail = max(base - member_floor, 0)
-
-        wf = weather_factor(prob, rain_in, temp_f)
-
-        # Tune rain sensitivity only on rainy-ish days
-        if prob >= 40 or rain_in >= 0.05:
-            wf *= rain_sens
-
-        # Bounce-back on good wash day
-        if prob < 30 and temp_f > 50:
-            wf *= (1 + rebound_boost(prev_prob, prev_rain))
-
-        cars = int((member_floor + (retail * traffic_mult * wf)) * bias)
-        cars = max(0, cars)
-
-        staff = staff_needed_full(cars, bool(site.get("prep", False)))
-        peak_staff = min(MAX_STAFF, max(int(site.get("min_staff", 1)), staff))
-
-        out.append({
-            "Day": dow_name,
-            "Date": day_iso,
-            "Forecast Cars": cars,
-            "Peak Staff": peak_staff,
-            "Expected Change %": impact_pct,
-            "Weather Driver": reason,
-            "Rain %": int(prob),
-            "Rain (in)": round(rain_in, 2),
-            "Temp (F)": round(temp_f, 1),
-        })
-
-        prev_prob = prob
-        prev_rain = rain_in
-
-    return out
+def nav_html() -> str:
+    return """
+<div class="sp-nav">
+  <div class="sp-logo">
+    <div class="sp-logo-mark">SP</div>
+    <div>
+      <div class="sp-logo-text">StaffPilot AI</div>
+      <div class="sp-logo-sub">Architected by Gopi Chand</div>
+    </div>
+  </div>
+  <div class="sp-badge">⚡ Instant Forecast</div>
+</div>
+"""
 
 
-# ---------------- SELF-LEARNING (FULL MODE) ----------------
+def metrics_html(rows: List[Dict], min_cars: int, max_cars: int) -> str:
+    busiest  = max(rows, key=lambda r: r["cars"])
+    slowest  = min(rows, key=lambda r: r["cars"])
+    rain_days = sum(1 for r in rows if r["rain_pct"] >= 60)
+    peak_staff = max(r["staff"] for r in rows)
+    avg_cars   = int(sum(r["cars"] for r in rows) / len(rows))
+    avg_impact = int(sum(r["impact"] for r in rows) / len(rows))
+    impact_cls = "red" if avg_impact < 0 else ("green" if avg_impact > 0 else "")
+    impact_str = f"{avg_impact:+d}%"
+    conf = confidence_label(rows)
 
-def update_site_learning(site: Dict[str, Any], forecast: int, actual: int,
-                         prob: float, rain_in: float) -> Tuple[float, float]:
-    """
-    Updates:
-      - bias: overall correction factor (smooth)
-      - rain_sensitivity: adjusts rain suppression in this market (bounded)
-    """
-    old_bias = float(site.get("bias", 1.0))
-    old_rain = float(site.get("rain_sensitivity", 1.0))
+    return f"""
+<div class="sp-metrics-row">
+  <div class="sp-metric">
+    <div class="sp-metric-label">Avg Daily Cars</div>
+    <div class="sp-metric-value">{avg_cars}</div>
+    <div class="sp-metric-sub">7-day average</div>
+  </div>
+  <div class="sp-metric green">
+    <div class="sp-metric-label">Busiest Day</div>
+    <div class="sp-metric-value">{busiest['cars']}</div>
+    <div class="sp-metric-sub">{busiest['dow']}</div>
+  </div>
+  <div class="sp-metric red">
+    <div class="sp-metric-label">Slowest Day</div>
+    <div class="sp-metric-value">{slowest['cars']}</div>
+    <div class="sp-metric-sub">{slowest['dow']}</div>
+  </div>
+  <div class="sp-metric blue">
+    <div class="sp-metric-label">Rain-Impacted Days</div>
+    <div class="sp-metric-value">{rain_days}</div>
+    <div class="sp-metric-sub">≥60% precip probability</div>
+  </div>
+</div>
+<div class="sp-confidence">
+  <span class="sp-conf-icon">📡</span>
+  <span>Forecast confidence: <strong>{conf}</strong> &nbsp;·&nbsp; Peak staff cap: <strong>{peak_staff}/{MAX_STAFF}</strong> &nbsp;·&nbsp; Avg weather impact: <strong>{impact_str}</strong></span>
+</div>
+"""
 
-    if forecast <= 0:
-        return old_bias, old_rain
 
-    ratio = actual / forecast  # >1 under-forecast; <1 over-forecast
+def table_html(rows: List[Dict], max_cars: int) -> str:
+    rows_html = ""
+    for r in rows:
+        # Cars bar
+        bar_pct = int((r["cars"] / max(max_cars, 1)) * 100)
+        cars_cell = f"""
+<div class="cars-bar-wrap">
+  <span class="cars-val">{r['cars']}</span>
+  <div class="cars-bar-bg"><div class="cars-bar-fill" style="width:{bar_pct}%"></div></div>
+</div>"""
 
-    # Bias update: smooth and bounded
-    new_bias = (old_bias * 0.80) + (ratio * 0.20)
-    new_bias = clamp(new_bias, 0.70, 1.30)
+        # Staff pips
+        pips = "".join(
+            f'<div class="pip{"" if j < r["staff"] else " empty"}"></div>'
+            for j in range(MAX_STAFF)
+        )
+        staff_cell = f'<div class="staff-pips">{pips}</div><span style="font-size:11px;color:var(--muted);margin-left:8px">{r["staff"]}</span>'
 
-    # Rain sensitivity update only on rainy days
-    new_rain = old_rain
-    rainy = (prob >= 50) or (rain_in >= 0.10)
-    if rainy:
-        if ratio > 1.00:
-            # Rain hurt less than expected -> reduce suppression -> increase factor
-            new_rain *= 1.03
+        # Weather pill
+        wx_icons = {"rain": "🌧", "cold": "🥶", "heat": "🌡", "clear": "☀️"}
+        icon = wx_icons.get(r["wx_cat"], "☀️")
+        wx_cell = f'<span class="wx-pill {r["wx_cat"]}">{icon} {r["reason"]}</span>'
+
+        # Impact
+        if r["impact"] < 0:
+            imp_cell = f'<span class="impact-neg">{r["impact"]:+d}%</span>'
+        elif r["impact"] > 0:
+            imp_cell = f'<span class="impact-pos">{r["impact"]:+d}%</span>'
         else:
-            # Rain hurt more than expected -> increase suppression -> decrease factor
-            new_rain *= 0.97
-        new_rain = clamp(new_rain, 0.70, 1.30)
+            imp_cell = f'<span class="impact-neu">{r["impact"]:+d}%</span>'
 
-    return new_bias, new_rain
+        rows_html += f"""
+<tr>
+  <td>
+    <div class="day-name">{r['dow']}</div>
+    <div class="day-date">{r['date']}</div>
+  </td>
+  <td>{cars_cell}</td>
+  <td style="display:flex;align-items:center">{staff_cell}</td>
+  <td>{imp_cell}</td>
+  <td>{wx_cell}</td>
+  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{r['temp_f']}°F</td>
+  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{r['rain_pct']}% · {r['rain_in']}"</td>
+</tr>"""
 
-
-# ---------------- ACCURACY METRICS ----------------
-
-def mape(df: pd.DataFrame) -> Optional[float]:
-    """Mean Absolute Percentage Error in %."""
-    if df.empty:
-        return None
-    df2 = df.dropna(subset=["forecast_cars", "actual_cars"]).copy()
-    if df2.empty:
-        return None
-    # Avoid divide-by-zero
-    df2 = df2[df2["forecast_cars"] > 0]
-    if df2.empty:
-        return None
-    err = (df2["actual_cars"] - df2["forecast_cars"]).abs() / df2["forecast_cars"]
-    return float(err.mean() * 100.0)
-
-
-def confidence_label(df_forecast: pd.DataFrame) -> str:
-    """Simple confidence score based on rain risk in the week."""
-    avg_rain = float(df_forecast["Rain %"].mean()) if not df_forecast.empty else 0.0
-    if avg_rain >= 60:
-        return "MEDIUM (weather-heavy week)"
-    if avg_rain >= 35:
-        return "HIGH (some variability)"
-    return "HIGH (stable week)"
-
-
-# ---------------- SUMMARY ----------------
-
-def generate_summary(df: pd.DataFrame) -> str:
-    if df.empty:
-        return ""
-
-    busiest = df.loc[df["Forecast Cars"].idxmax()]
-    slowest = df.loc[df["Forecast Cars"].idxmin()]
-    rain_days = int((df["Rain %"] >= 60).sum())
-    peak_staff = int(df["Peak Staff"].max()) if "Peak Staff" in df.columns else None
-    avg_impact = float(df["Expected Change %"].mean()) if "Expected Change %" in df.columns else 0.0
-
-    lines = []
-    lines.append("### 📈 Weekly Operational Summary")
-    lines.append(f"• Busiest day: **{busiest['Day']}** (~{int(busiest['Forecast Cars'])} cars)")
-    lines.append(f"• Slowest day: **{slowest['Day']}** (~{int(slowest['Forecast Cars'])} cars)")
-    lines.append(f"• Rain-impacted days (≥60%): **{rain_days}**")
-    lines.append(f"• Average weather impact: **{avg_impact:+.0f}%** (weather-only)")
-    if peak_staff is not None:
-        lines.append(f"• Peak staffing needed (cap {MAX_STAFF}): **{peak_staff}**")
-    lines.append(f"• Forecast confidence: **{confidence_label(df)}**")
-    return "\n".join(lines)
+    return f"""
+<div class="sp-table-wrap">
+  <div class="sp-table-header">7-Day Staffing Forecast</div>
+  <table class="sp-table">
+    <thead>
+      <tr>
+        <th>Day</th>
+        <th>Forecast Cars</th>
+        <th>Peak Staff</th>
+        <th>Weather Impact</th>
+        <th>Conditions</th>
+        <th>High Temp</th>
+        <th>Precip</th>
+      </tr>
+    </thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>
+"""
 
 
-# ---------------- UI ----------------
+def mini_chart_html(rows: List[Dict], max_cars: int) -> str:
+    """SVG sparkline bar chart."""
+    W, H = 900, 120
+    pad_l, pad_r, pad_t, pad_b = 10, 10, 10, 24
+    inner_w = W - pad_l - pad_r
+    inner_h = H - pad_t - pad_b
+    n = len(rows)
+    bar_w = inner_w / n
+    bar_gap = bar_w * 0.28
+    rect_w = bar_w - bar_gap
 
-mode = st.sidebar.radio("Mode", ["⚡ Instant Forecast", "🚀 Full AI Mode"])
+    bars = ""
+    labels = ""
+    for i, r in enumerate(rows):
+        h = max(4, int((r["cars"] / max(max_cars, 1)) * inner_h))
+        x = pad_l + i * bar_w + bar_gap / 2
+        y = pad_t + inner_h - h
+        color = "#ef4444" if r["rain_pct"] >= 60 else ("#f5a623" if r["cars"] == max(rr["cars"] for rr in rows) else "#374151")
+        bars += f'<rect x="{x:.1f}" y="{y}" width="{rect_w:.1f}" height="{h}" rx="3" fill="{color}" opacity="0.85"/>'
+        cx = x + rect_w / 2
+        labels += f'<text x="{cx:.1f}" y="{H - 4}" text-anchor="middle" font-size="10" fill="#6b7280" font-family="IBM Plex Mono, monospace">{r["dow"][:3]}</text>'
 
-
-# =========================
-# ⚡ INSTANT FORECAST
-# =========================
-if mode == "⚡ Instant Forecast":
-    st.header("⚡ Instant Weather-Based Forecast (No Site Setup)")
-
-    st.caption(
-        "This mode uses weather + a typical weekend/weekday curve. "
-        "It does **not** know your promos, road traffic changes, construction, events, or peak-hour patterns."
-    )
-
-    location = st.text_input("ZIP or City (required for weather)", value="")
-
-    st.subheader("Demand Guardrails (so forecasts never exceed your reality)")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        min_cars = st.number_input("Lowest cars/day", min_value=0, max_value=8000, value=80, step=10)
-    with c2:
-        avg_cars = st.number_input("Average cars/day", min_value=10, max_value=8000, value=150, step=10)
-    with c3:
-        max_cars = st.number_input("Highest cars/day", min_value=20, max_value=12000, value=280, step=10)
-
-    if not (min_cars <= avg_cars <= max_cars):
-        st.error("Ensure: Lowest ≤ Average ≤ Highest")
-        st.stop()
-
-    st.info(
-        "Accuracy note: Weather-only forecasting can still be off because it doesn't include promos, "
-        "local road traffic changes, nearby competition, or event-driven spikes. "
-        "Use the **Expected Change %** as the main decision support."
-    )
-
-    if st.button("Generate Instant Forecast"):
-        if not location.strip():
-            st.warning("Please enter a ZIP or City.")
-            st.stop()
-
-        try:
-            rows = forecast_week_quick(location.strip(), int(min_cars), int(avg_cars), int(max_cars))
-            df = pd.DataFrame(rows)
-        except Exception as e:
-            st.error(f"Forecast failed: {e}")
-            st.stop()
-
-        st.dataframe(df[["Day", "Forecast Cars", "Peak Staff", "Expected Change %", "Weather Driver", "Rain %", "Temp (F)"]],
-                     use_container_width=True)
-        st.line_chart(df.set_index("Day")["Forecast Cars"])
-        st.markdown(generate_summary(df))
+    return f"""
+<div class="sp-table-wrap" style="padding:20px 24px 8px">
+  <div class="sp-table-header">Daily Volume Trend</div>
+  <svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">
+    {bars}{labels}
+  </svg>
+  <div style="display:flex;gap:20px;padding:10px 0 6px;font-size:11px;color:var(--muted);font-family:var(--mono)">
+    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#f5a623;border-radius:2px;display:inline-block"></span>Busiest</span>
+    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#ef4444;border-radius:2px;display:inline-block"></span>Rain Day (≥60%)</span>
+    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#374151;border-radius:2px;display:inline-block"></span>Normal</span>
+  </div>
+</div>
+"""
 
 
-# =========================
-# 🚀 FULL AI MODE
-# =========================
-else:
-    if supabase is None:
-        st.error("Supabase not connected. Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets.")
-        st.stop()
+# ─────────────────────────────────────────────────────────────────────────────
+# APP
+# ─────────────────────────────────────────────────────────────────────────────
 
-    st.header("🚀 Full AI Mode (Self-Learning + Accuracy Dashboard)")
+st.markdown(nav_html(), unsafe_allow_html=True)
 
-    menu = st.sidebar.selectbox("Full Mode Menu", ["Create Site", "Forecast & Train", "Accuracy Dashboard"])
+st.markdown('<div class="sp-page">', unsafe_allow_html=True)
 
-    # -------- Create Site --------
-    if menu == "Create Site":
-        st.subheader("Create a Site (privacy-safe inputs only)")
+# ── Hero ──────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="margin-bottom:36px;padding-top:8px">
+  <div class="sp-section-title">Weather Intelligence</div>
+  <h2 class="sp-section-h2">7-Day Staffing Forecast</h2>
+  <p class="sp-section-desc">
+    Enter your location and demand range. StaffPilot combines weather data, day-of-week patterns,
+    and bounce-back modeling to generate an instant staffing plan.
+  </p>
+</div>
+""", unsafe_allow_html=True)
 
-        alias = st.text_input("Site Alias (e.g., GA Site 1)", value="")
-        location = st.text_input("ZIP or City (for weather)", value="")
+# ── Input card ────────────────────────────────────────────────────────────────
+st.markdown('<div class="sp-card"><div class="sp-card-title">Location &amp; Demand Parameters</div>', unsafe_allow_html=True)
 
-        colA, colB = st.columns(2)
-        with colA:
-            open_hour = st.slider("Opening Hour", 0, 23, 8)
-        with colB:
-            close_hour = st.slider("Closing Hour", 1, 24, 20)
+col_loc, col_blank = st.columns([2, 2])
+with col_loc:
+    location = st.text_input("ZIP Code or City", placeholder="e.g. 30301 or Atlanta, GA", label_visibility="visible")
 
-        traffic = st.selectbox("Street Traffic", list(TRAFFIC_MULT.keys()))
-        min_staff = st.slider("Minimum Staff", 1, 5, 2)
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        prep = st.checkbox("Prep every car?")
-        one_loader = st.checkbox("Can operate with one loader at moderate flow?")
+c1, c2, c3 = st.columns(3)
+with c1:
+    min_cars = st.number_input("Lowest Cars / Day", min_value=0, max_value=8000, value=80, step=10)
+with c2:
+    avg_cars = st.number_input("Average Cars / Day", min_value=10, max_value=8000, value=150, step=10)
+with c3:
+    max_cars = st.number_input("Highest Cars / Day", min_value=20, max_value=12000, value=280, step=10)
 
-        member_washes = st.number_input("Estimated member washes/day", min_value=0, max_value=2000, value=80, step=10)
+if not (min_cars <= avg_cars <= max_cars):
+    st.markdown('<div class="sp-error">⚠ Guardrails must satisfy: Lowest ≤ Average ≤ Highest</div>', unsafe_allow_html=True)
 
-        st.markdown("**Normal week car counts (typical non-rain week)**")
-        baseline = {}
-        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        defaults = [120, 140, 130, 150, 180, 240, 210]
-        for d, dv in zip(days, defaults):
-            baseline[d] = st.number_input(d, min_value=0, max_value=12000, value=int(dv), step=10, key=f"base_{d}")
+st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 
-        if st.button("Create Site"):
-            if not alias.strip():
-                st.warning("Enter a Site Alias.")
-                st.stop()
-            if not location.strip():
-                st.warning("Enter ZIP or City.")
-                st.stop()
+_, btn_col, _ = st.columns([1, 2, 1])
+with btn_col:
+    run = st.button("⚡ Generate Forecast")
 
+st.markdown("</div>", unsafe_allow_html=True)  # close sp-card
+
+# ── Disclaimer ───────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="sp-disclaimer">
+  <strong style="color:var(--text)">Accuracy note:</strong>
+  This forecast uses weather data + industry day-of-week curves. It does <em>not</em> account for
+  active promotions, local road closures, nearby competition, or event-driven spikes.
+  Treat <strong>Expected Change %</strong> as directional guidance, not a hard prediction.
+</div>
+""", unsafe_allow_html=True)
+
+# ── Results ───────────────────────────────────────────────────────────────────
+if run:
+    if not location.strip():
+        st.markdown('<div class="sp-error">⚠ Please enter a ZIP code or city before generating.</div>', unsafe_allow_html=True)
+    elif not (min_cars <= avg_cars <= max_cars):
+        st.markdown('<div class="sp-error">⚠ Fix guardrail values before generating.</div>', unsafe_allow_html=True)
+    else:
+        with st.spinner("Fetching weather data…"):
             try:
-                lat, lon = get_lat_lon(location.strip())
+                rows = forecast_week_quick(location.strip(), int(min_cars), int(avg_cars), int(max_cars))
             except Exception as e:
-                st.error(f"Location error: {e}")
-                st.stop()
+                st.markdown(f'<div class="sp-error">⚠ {e}</div>', unsafe_allow_html=True)
+                rows = []
 
-            payload = {
-                "alias": alias.strip(),
-                "location": location.strip(),
-                "lat": lat,
-                "lon": lon,
-                "open_hour": int(open_hour),
-                "close_hour": int(close_hour),
-                "traffic": traffic,
-                "min_staff": int(min_staff),
-                "prep": bool(prep),
-                "one_loader": bool(one_loader),
-                "member_washes": int(member_washes),
-                "baseline": baseline,
-                "bias": 1.0,
-                "rain_sensitivity": 1.0,
-            }
+        if rows:
+            st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
 
-            try:
-                supabase.table("sites").insert(payload).execute()
-                st.success("Site created ✅")
-            except Exception as e:
-                st.error(f"Failed to create site: {e}")
-
-    # -------- Forecast & Train --------
-    if menu == "Forecast & Train":
-        st.subheader("Generate 7-day plan (and save forecasts for accuracy tracking)")
-
-        try:
-            sites = supabase.table("sites").select("*").execute().data
-        except Exception as e:
-            st.error(f"Failed to load sites: {e}")
-            st.stop()
-
-        if not sites:
-            st.info("Create a site first.")
-            st.stop()
-
-        site = st.selectbox("Choose Site", sites, format_func=lambda x: x.get("alias", "Unknown"))
-
-        if st.button("Generate AI Staffing Plan"):
-            try:
-                rows = forecast_week_full(site)
-                df = pd.DataFrame(rows)
-            except Exception as e:
-                st.error(f"Forecast failed: {e}")
-                st.stop()
-
-            # Display
-            st.dataframe(df[["Day", "Forecast Cars", "Peak Staff", "Expected Change %", "Weather Driver", "Rain %", "Temp (F)"]],
-                         use_container_width=True)
-            st.line_chart(df.set_index("Day")["Forecast Cars"])
-            st.markdown(generate_summary(df))
-
-            # Save forecasts to Supabase daily_metrics (upsert)
-            try:
-                for _, r in df.iterrows():
-                    payload = {
-                        "site_id": site["id"],
-                        "day": r["Date"],
-                        "forecast_cars": int(r["Forecast Cars"]),
-                        "expected_change_pct": int(r["Expected Change %"]),
-                        "weather_driver": str(r["Weather Driver"]),
-                        "precip_prob": int(r["Rain %"]),
-                        "precip_in": float(r["Rain (in)"]),
-                        "temp_f": float(r["Temp (F)"]),
-                    }
-                    supabase.table("daily_metrics").upsert(payload).execute()
-                st.success("Saved 7-day forecasts ✅ (for accuracy tracking)")
-            except Exception as e:
-                st.warning(f"Forecast shown, but saving to Supabase failed: {e}")
-
-            st.divider()
-            st.subheader("Train StaffPilot (enter actual cars)")
-
-            st.caption("Entering actuals updates bias + rain_sensitivity and improves future forecasts.")
-            day_pick = st.date_input("Date", value=date.today())
-            actual = st.number_input("Actual cars washed", min_value=0, max_value=20000, value=0, step=10)
-
-            if st.button("Save Actual + Update Model"):
-                day_str = day_pick.isoformat()
-
-                # Pull the stored forecast for that day (preferred) so training doesn't depend on current df
-                try:
-                    recs = (
-                        supabase.table("daily_metrics")
-                        .select("*")
-                        .eq("site_id", site["id"])
-                        .eq("day", day_str)
-                        .limit(1)
-                        .execute()
-                        .data
-                    )
-                except Exception as e:
-                    st.error(f"Failed to fetch stored forecast for training: {e}")
-                    st.stop()
-
-                if not recs:
-                    st.warning("No stored forecast found for that date. Generate forecast first, then enter actuals.")
-                    st.stop()
-
-                rec = recs[0]
-                forecast = int(rec.get("forecast_cars") or 0)
-                prob = float(rec.get("precip_prob") or 0)
-                rain_in = float(rec.get("precip_in") or 0.0)
-
-                new_bias, new_rain = update_site_learning(site, forecast, int(actual), prob, rain_in)
-
-                # Update site parameters
-                try:
-                    supabase.table("sites").update({
-                        "bias": new_bias,
-                        "rain_sensitivity": new_rain
-                    }).eq("id", site["id"]).execute()
-                except Exception as e:
-                    st.error(f"Failed to update learning params: {e}")
-                    st.stop()
-
-                # Update actual_cars in daily_metrics (upsert)
-                try:
-                    supabase.table("daily_metrics").upsert({
-                        "site_id": site["id"],
-                        "day": day_str,
-                        "actual_cars": int(actual),
-                    }).execute()
-                except Exception as e:
-                    st.error(f"Failed to save actual: {e}")
-                    st.stop()
-
-                st.success("Saved ✅ StaffPilot learned from today.")
-                st.write(f"Bias: **{float(site.get('bias', 1.0)):.3f} → {new_bias:.3f}**")
-                st.write(f"Rain sensitivity: **{float(site.get('rain_sensitivity', 1.0)):.3f} → {new_rain:.3f}**")
-
-    # -------- Accuracy Dashboard --------
-    if menu == "Accuracy Dashboard":
-        st.subheader("Accuracy Dashboard (Forecast vs Actual)")
-
-        try:
-            sites = supabase.table("sites").select("*").execute().data
-        except Exception as e:
-            st.error(f"Failed to load sites: {e}")
-            st.stop()
-
-        if not sites:
-            st.info("Create a site first.")
-            st.stop()
-
-        site = st.selectbox("Choose Site", sites, format_func=lambda x: x.get("alias", "Unknown"))
-
-        days_back = st.slider("Lookback window (days)", min_value=7, max_value=90, value=30, step=1)
-        start_day = (date.today() - timedelta(days=int(days_back))).isoformat()
-        end_day = date.today().isoformat()
-
-        try:
-            recs = (
-                supabase.table("daily_metrics")
-                .select("day,forecast_cars,actual_cars,expected_change_pct,weather_driver,precip_prob,temp_f")
-                .eq("site_id", site["id"])
-                .gte("day", start_day)
-                .lte("day", end_day)
-                .order("day")
-                .execute()
-                .data
+            # Show which weather source was used (fallback makes this visible)
+            wx_source = st.session_state.get("_wx_source", "Open-Meteo")
+            is_fallback = "fallback" in wx_source.lower()
+            src_color  = "#f97316" if is_fallback else "#22c55e"
+            src_icon   = "⚠️" if is_fallback else "✅"
+            src_note   = " — Open-Meteo was unavailable" if is_fallback else ""
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:11px;color:{src_color};'
+                f'margin-bottom:16px;letter-spacing:0.08em">'
+                f'{src_icon} Weather source: <strong>{wx_source}</strong>{src_note}</div>',
+                unsafe_allow_html=True,
             )
-        except Exception as e:
-            st.error(f"Failed to load metrics: {e}")
-            st.stop()
 
-        if not recs:
-            st.info("No forecasts/actuals yet. Generate a forecast, then enter actuals for a few days.")
-            st.stop()
+            st.markdown(metrics_html(rows, int(min_cars), int(max_cars)), unsafe_allow_html=True)
+            st.markdown(mini_chart_html(rows, int(max_cars)), unsafe_allow_html=True)
+            st.markdown(table_html(rows, int(max_cars)), unsafe_allow_html=True)
 
-        dfm = pd.DataFrame(recs)
-        dfm["day"] = pd.to_datetime(dfm["day"])
-        dfm = dfm.sort_values("day")
-
-        # Compute error %
-        dfm["error_pct"] = None
-        mask = dfm["forecast_cars"].notna() & dfm["actual_cars"].notna() & (dfm["forecast_cars"] > 0)
-        dfm.loc[mask, "error_pct"] = (
-            (dfm.loc[mask, "actual_cars"] - dfm.loc[mask, "forecast_cars"]).abs()
-            / dfm.loc[mask, "forecast_cars"] * 100.0
-        )
-
-        # Rolling MAPE
-        def window_mape(n: int) -> Optional[float]:
-            cut = dfm.tail(n)
-            return mape(cut.rename(columns={"forecast_cars": "forecast_cars", "actual_cars": "actual_cars"}))
-
-        m7 = window_mape(7)
-        m14 = window_mape(14)
-        m30 = window_mape(30)
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("7-day MAPE", f"{m7:.1f}%" if m7 is not None else "—")
-        c2.metric("14-day MAPE", f"{m14:.1f}%" if m14 is not None else "—")
-        c3.metric("30-day MAPE", f"{m30:.1f}%" if m30 is not None else "—")
-
-        st.caption("MAPE = average absolute % error. Lower is better. (Only days with both forecast + actual are included.)")
-
-        # Chart: forecast vs actual
-        chart_df = dfm[["day", "forecast_cars", "actual_cars"]].set_index("day")
-        st.line_chart(chart_df)
-
-        # Table: include errors
-        show_cols = ["day", "forecast_cars", "actual_cars", "error_pct", "expected_change_pct", "weather_driver", "precip_prob", "temp_f"]
-        pretty = dfm[show_cols].copy()
-        pretty = pretty.rename(columns={
-            "day": "Date",
-            "forecast_cars": "Forecast",
-            "actual_cars": "Actual",
-            "error_pct": "Error (%)",
-            "expected_change_pct": "Expected Change (%)",
-            "weather_driver": "Weather Driver",
-            "precip_prob": "Rain (%)",
-            "temp_f": "Temp (F)",
-        })
-        st.dataframe(pretty, use_container_width=True)
-
-        st.info(
-            "Trust signal: As you log more actuals, StaffPilot tunes **bias** and **rain sensitivity**, "
-            "and you can see accuracy improve over time."
-        )
+st.markdown("</div>", unsafe_allow_html=True)  # close sp-page
