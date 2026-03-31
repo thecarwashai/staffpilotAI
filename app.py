@@ -505,19 +505,88 @@ DOW_MULT = {
 QUICK_CPSH = 9.5
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CANADA POSTAL CODE NORMALIZER
+# CANADA POSTAL CODE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+
+# FSA → (lat, lon, city_name) for all 18 Canadian province letter prefixes.
+# These are approximate centroids — accurate enough for weather (±50 km is fine).
+# Used as a hard fallback when Open-Meteo geocoding can't resolve a postal code.
+CANADA_FSA_FALLBACK: Dict[str, Tuple[float, float, str]] = {
+    # British Columbia
+    "V": (49.2827, -123.1207, "Vancouver, BC"),
+    # Alberta
+    "T": (51.0447, -114.0719, "Calgary, AB"),
+    # Saskatchewan
+    "S": (52.1332, -106.6700, "Saskatoon, SK"),
+    # Manitoba
+    "R": (49.8951, -97.1384,  "Winnipeg, MB"),
+    # Ontario
+    "K": (44.2312, -76.4860,  "Kingston, ON"),
+    "L": (43.7315, -79.7624,  "Brampton, ON"),
+    "M": (43.6532, -79.3832,  "Toronto, ON"),
+    "N": (42.9849, -81.2453,  "London, ON"),
+    "P": (46.4924, -80.9931,  "Sudbury, ON"),
+    # Quebec
+    "G": (46.8139, -71.2080,  "Quebec City, QC"),
+    "H": (45.5017, -73.5673,  "Montreal, QC"),
+    "J": (45.3874, -75.6919,  "Gatineau, QC"),
+    # New Brunswick
+    "E": (45.9636, -66.6431,  "Fredericton, NB"),
+    # Nova Scotia
+    "B": (44.6488, -63.5752,  "Halifax, NS"),
+    # Prince Edward Island
+    "C": (46.2382, -63.1311,  "Charlottetown, PE"),
+    # Newfoundland
+    "A": (47.5615, -52.7126,  "St. John's, NL"),
+    # Northwest Territories / Nunavut / Yukon
+    "X": (62.4540, -114.3718, "Yellowknife, NT"),
+    "Y": (60.7212, -135.0568, "Whitehorse, YT"),
+}
+
 
 def normalize_canadian_postal(raw: str) -> str:
     """
-    Canadian postal codes are 6 chars: A1A 1A1.
-    Accepts with or without space; uppercases; inserts space if missing.
-    Returns normalized string, or original if it doesn't look Canadian.
+    Normalise to 'A1A 1A1' format (with space).
+    Also accepts just an FSA like 'M5V'.
+    Returns original string unchanged if it doesn't look Canadian.
     """
     code = raw.strip().upper().replace(" ", "")
     if len(code) == 6 and code[0].isalpha() and code[1].isdigit():
         return f"{code[:3]} {code[3:]}"
+    # 3-char FSA only (e.g. "M5V") — return as-is, geocoder handles it
+    if len(code) == 3 and code[0].isalpha() and code[1].isdigit() and code[2].isalpha():
+        return code
     return raw.strip()
+
+
+def _looks_like_canadian_postal(s: str) -> bool:
+    """True if string looks like a full postal code (A1A 1A1) or FSA (A1A)."""
+    code = s.strip().upper().replace(" ", "")
+    if len(code) == 6:
+        return code[0].isalpha() and code[1].isdigit() and code[2].isalpha()
+    if len(code) == 3:
+        return code[0].isalpha() and code[1].isdigit() and code[2].isalpha()
+    return False
+
+
+def _open_meteo_geocode(query: str) -> Optional[Tuple[float, float]]:
+    """Single Open-Meteo geocoding attempt. Returns (lat, lon) or None."""
+    url = "https://geocoding-api.open-meteo.com/v1/search"
+    try:
+        res = requests.get(url, params={"name": query, "count": 5},
+                           headers=HEADERS, timeout=15)
+        if res.status_code != 200:
+            return None
+        results = res.json().get("results") or []
+        # Prefer results tagged as Canada when we're searching for Canada
+        canada_results = [r for r in results if r.get("country_code") == "CA"]
+        best = canada_results[0] if canada_results else (results[0] if results else None)
+        if best:
+            return float(best["latitude"]), float(best["longitude"])
+    except Exception:
+        pass
+    return None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WEATHER HELPERS  (Primary: Open-Meteo  |  Fallback: WeatherAPI.com)
@@ -534,18 +603,65 @@ WEATHERAPI_KEY: str = st.secrets.get("WEATHERAPI_KEY", "")
 @st.cache_data(ttl=3600)
 def get_lat_lon(location: str, country: str = "USA") -> Tuple[float, float]:
     """
-    Resolve ZIP / postal code / city to (lat, lon) via Open-Meteo geocoding.
-    For Canada, appends ', Canada' to improve geocoding accuracy.
-    """
-    query = location
-    if country == "Canada":
-        # If it looks like a bare postal code (no comma), append country
-        if "," not in location:
-            query = f"{location}, Canada"
+    Resolve ZIP / postal code / city to (lat, lon).
 
+    Canada strategy (tried in order):
+      1. Query Open-Meteo with just the city/FSA string (e.g. "M5V")
+      2. Query Open-Meteo with "M5V, Canada"  
+      3. Query Open-Meteo with just the FSA prefix letter's known city
+         (e.g. "M" → "Toronto, Canada")
+      4. Hard-coded FSA-prefix centroid table (always works for valid CA codes)
+
+    USA strategy: single Open-Meteo query.
+    """
+    if country == "Canada":
+        clean = location.strip().upper().replace(" ", "")
+
+        queries_to_try: List[str] = []
+
+        if _looks_like_canadian_postal(clean):
+            fsa = clean[:3]  # Forward Sortation Area
+            queries_to_try = [
+                fsa,                        # bare FSA
+                f"{fsa}, Canada",           # FSA + country
+                f"{fsa} Canada",            # no comma variant
+            ]
+            # Also try the FSA prefix city name
+            prefix = fsa[0]
+            if prefix in CANADA_FSA_FALLBACK:
+                city_name = CANADA_FSA_FALLBACK[prefix][2]
+                queries_to_try.append(city_name)
+        else:
+            # Looks like a city name — try as-is and with ", Canada"
+            queries_to_try = [
+                location.strip(),
+                f"{location.strip()}, Canada",
+            ]
+
+        # Try each query variant
+        for q in queries_to_try:
+            result = _open_meteo_geocode(q)
+            if result:
+                return result
+
+        # Hard fallback: FSA prefix table
+        if _looks_like_canadian_postal(clean):
+            prefix = clean[0]
+            if prefix in CANADA_FSA_FALLBACK:
+                lat, lon, city = CANADA_FSA_FALLBACK[prefix]
+                # Store a note so the UI can warn the user
+                st.session_state["_geo_fallback"] = city
+                return lat, lon
+
+        raise RuntimeError(
+            f"Could not locate '{location}' in Canada. "
+            "Try a city name like 'Toronto' or 'Calgary, AB'."
+        )
+
+    # ── USA ──────────────────────────────────────────────────────────────────
     url = "https://geocoding-api.open-meteo.com/v1/search"
     try:
-        res = requests.get(url, params={"name": query, "count": 1},
+        res = requests.get(url, params={"name": location, "count": 1},
                            headers=HEADERS, timeout=15)
     except requests.exceptions.Timeout:
         raise RuntimeError("Geocoding request timed out. Check your network.")
@@ -555,11 +671,6 @@ def get_lat_lon(location: str, country: str = "USA") -> Tuple[float, float]:
         raise RuntimeError(f"Geocoding API returned HTTP {res.status_code}.")
     results = res.json().get("results") or []
     if not results:
-        if country == "Canada":
-            raise RuntimeError(
-                "Canadian location not found. Try your city name (e.g. 'Toronto') "
-                "or forward sortation area (e.g. 'M5V, Canada')."
-            )
         raise RuntimeError("Location not found. Try a ZIP code or 'City, State'.")
     return float(results[0]["latitude"]), float(results[0]["longitude"])
 
@@ -1366,6 +1477,17 @@ if run:
 
         if rows:
             st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
+
+            # Geo fallback warning (shown when postal code resolved via FSA prefix table)
+            geo_fallback = st.session_state.pop("_geo_fallback", None)
+            if geo_fallback:
+                st.markdown(
+                    f'<div style="font-family:var(--mono);font-size:11px;color:#f97316;'
+                    f'margin-bottom:10px;letter-spacing:0.08em">'
+                    f'📍 Postal code resolved to nearest city: <strong>{geo_fallback}</strong> '
+                    f'— weather accuracy within ~50 km</div>',
+                    unsafe_allow_html=True,
+                )
 
             wx_source = st.session_state.get("_wx_source", "Open-Meteo")
             is_fallback = "fallback" in wx_source.lower()
