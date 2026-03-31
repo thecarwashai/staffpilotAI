@@ -882,23 +882,142 @@ def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
     }
 
 
+# ── Fallback 3: Climate-average estimator (no network required) ──────────────
+#
+# Uses lat/lon + current month to produce plausible 7-day weather estimates
+# from built-in climate normals. No API calls, no rate limits, always works.
+# Accuracy: seasonal directional guidance, not day-specific forecast.
+#
+# Climate zones are determined by latitude band + longitude (continent):
+#   - Arctic    (lat > 60)
+#   - Subarctic (lat 55-60, e.g. northern Canada)
+#   - Cold      (lat 45-55, e.g. southern Canada, northern US)
+#   - Temperate (lat 35-45, e.g. mid US)
+#   - Warm      (lat 25-35, e.g. southern US)
+#   - Hot       (lat < 25)
+#
+# Monthly normals per zone: (temp_f_max, precip_prob_pct, rain_in_day, snow_in_day)
+
+_CLIMATE_NORMALS: Dict[str, List[Tuple[float, float, float, float]]] = {
+    # zone: [(temp_f, precip_prob, rain_in, snow_in)] * 12 months Jan-Dec
+    "arctic": [
+        (-4,25,0.0,0.6),(-4,22,0.0,0.5),(10,20,0.0,0.4),(28,18,0.0,0.2),
+        (44,25,0.1,0.0),(58,35,0.1,0.0),(65,40,0.1,0.0),(62,38,0.1,0.0),
+        (48,30,0.1,0.1),(28,25,0.0,0.3),(10,25,0.0,0.5),(-2,25,0.0,0.6),
+    ],
+    "subarctic": [
+        (5,20,0.0,0.5),(10,18,0.0,0.4),(25,20,0.0,0.3),(42,22,0.0,0.1),
+        (58,30,0.1,0.0),(70,38,0.1,0.0),(76,35,0.1,0.0),(72,33,0.1,0.0),
+        (57,30,0.1,0.0),(40,25,0.0,0.1),(22,22,0.0,0.3),(8,20,0.0,0.5),
+    ],
+    "cold": [
+        (28,30,0.0,0.3),(32,28,0.0,0.3),(44,32,0.1,0.1),(58,35,0.1,0.0),
+        (68,38,0.1,0.0),(78,40,0.1,0.0),(83,35,0.1,0.0),(80,32,0.1,0.0),
+        (68,35,0.1,0.0),(54,30,0.1,0.0),(40,30,0.0,0.1),(30,30,0.0,0.2),
+    ],
+    "temperate": [
+        (45,35,0.1,0.0),(50,33,0.1,0.0),(60,38,0.1,0.0),(68,40,0.1,0.0),
+        (76,38,0.1,0.0),(84,35,0.1,0.0),(89,30,0.1,0.0),(87,28,0.1,0.0),
+        (78,32,0.1,0.0),(66,32,0.1,0.0),(54,35,0.1,0.0),(46,35,0.1,0.0),
+    ],
+    "warm": [
+        (62,35,0.1,0.0),(65,33,0.1,0.0),(72,38,0.1,0.0),(78,35,0.1,0.0),
+        (85,35,0.1,0.0),(92,38,0.1,0.0),(95,45,0.1,0.0),(94,42,0.1,0.0),
+        (88,38,0.1,0.0),(78,32,0.1,0.0),(68,30,0.1,0.0),(62,32,0.1,0.0),
+    ],
+    "hot": [
+        (75,30,0.1,0.0),(78,28,0.1,0.0),(84,30,0.1,0.0),(90,28,0.0,0.0),
+        (95,25,0.0,0.0),(100,20,0.0,0.0),(98,25,0.1,0.0),(97,30,0.1,0.0),
+        (92,30,0.1,0.0),(85,25,0.0,0.0),(79,25,0.0,0.0),(75,28,0.0,0.0),
+    ],
+}
+
+# Day-to-day variability seeds — slight variation across the 7 days
+_DAY_OFFSETS: List[Tuple[float, float, float]] = [
+    (0.0,  0,    0.0),
+    (2.0,  5,    0.02),
+    (-3.0, -8,   0.0),
+    (4.0,  10,   0.03),
+    (-1.0, -5,   0.0),
+    (3.0,  8,    0.01),
+    (-2.0, 3,    0.0),
+]
+
+
+def _climate_zone(lat: float, lon: float) -> str:
+    """Map lat/lon to a climate zone string."""
+    a = abs(lat)
+    if a > 60:   return "arctic"
+    if a > 55:   return "subarctic"
+    if a > 45:   return "cold"
+    if a > 35:   return "temperate"
+    if a > 25:   return "warm"
+    return "hot"
+
+
+def _fetch_climate_estimate(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Generate a 7-day weather estimate from built-in climate normals.
+    No network required. Always succeeds.
+    """
+    zone = _climate_zone(lat, lon)
+    normals = _CLIMATE_NORMALS[zone]
+    month_idx = datetime.utcnow().month - 1  # 0-based
+    base_temp, base_prob, base_rain, base_snow = normals[month_idx]
+
+    times, probs, rains, temps, snows = [], [], [], [], []
+    base_date = datetime.utcnow().date()
+
+    for i in range(7):
+        t_off, p_off, r_off = _DAY_OFFSETS[i]
+        times.append((base_date + timedelta(days=i)).isoformat())
+        temp  = max(-40.0, base_temp + t_off)
+        prob  = max(0.0, min(100.0, base_prob + p_off))
+        rain  = max(0.0, base_rain + r_off)
+        snow  = base_snow if temp < 34 else 0.0
+        temps.append(round(temp, 1))
+        probs.append(round(prob, 1))
+        rains.append(round(rain, 3))
+        snows.append(round(snow, 2))
+
+    return {
+        "time":                           times,
+        "precipitation_probability_max":  probs,
+        "precipitation_sum":              rains,
+        "temperature_2m_max":             temps,
+        "snowfall_sum":                   snows,
+    }
+
+
 @st.cache_data(ttl=1800)
 def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
     errors: Dict[str, str] = {}
 
-    sources = [
+    live_sources = [
         ("Open-Meteo",      lambda: _fetch_open_meteo(lat, lon)),
         ("wttr.in",         lambda: _fetch_wttr(lat, lon)),
         ("WeatherAPI.com",  lambda: _fetch_weatherapi(lat, lon)),
     ]
 
-    for name, fetch in sources:
+    for name, fetch in live_sources:
         try:
             data = fetch()
             st.session_state["_wx_source"] = name if name == "Open-Meteo" else f"{name} (fallback)"
+            st.session_state["_wx_estimated"] = False
             return data
         except RuntimeError as e:
             errors[name] = str(e)
+
+    # All live sources failed — use built-in climate estimate
+    try:
+        data = _fetch_climate_estimate(lat, lon)
+        zone = _climate_zone(lat, lon)
+        st.session_state["_wx_source"] = f"Climate Estimate ({zone} zone)"
+        st.session_state["_wx_estimated"] = True
+        st.session_state["_wx_errors"] = errors
+        return data
+    except Exception as e:
+        errors["Climate Estimate"] = str(e)
 
     bullet = "\n".join(f"• {k}: {v}" for k, v in errors.items())
     raise RuntimeError(f"All weather sources failed:\n{bullet}")
@@ -1529,11 +1648,31 @@ if run:
                     unsafe_allow_html=True,
                 )
 
+            # Climate-estimate warning banner
+            wx_estimated = st.session_state.get("_wx_estimated", False)
+            if wx_estimated:
+                wx_errors = st.session_state.get("_wx_errors", {})
+                err_lines = " &nbsp;·&nbsp; ".join(
+                    f"{k}: {v.split(chr(10))[0][:80]}" for k, v in wx_errors.items()
+                )
+                st.markdown(
+                    f'''<div style="background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.35);'
+                    f'border-radius:10px;padding:14px 18px;margin-bottom:16px;font-size:13px;color:#fdba74;line-height:1.6">'
+                    f'<strong style="color:#fb923c">⚠ Live weather unavailable — using seasonal climate estimates</strong><br>'
+                    f'Staffing direction is still reliable, but day-specific rain/snow accuracy is reduced. '
+                    f'Add a free <a href="https://www.weatherapi.com/signup.aspx" target="_blank" '
+                    f'style="color:#f97316">WeatherAPI.com key</a> to your Streamlit secrets for live data.<br>'
+                    f'<span style="font-size:11px;color:#9ca3af;font-family:var(--mono)">{err_lines}</span>'
+                    f'</div>''',
+                    unsafe_allow_html=True,
+                )
+
             wx_source = st.session_state.get("_wx_source", "Open-Meteo")
-            is_fallback = "fallback" in wx_source.lower()
+            is_estimated = st.session_state.get("_wx_estimated", False)
+            is_fallback = "fallback" in wx_source.lower() or is_estimated
             src_color  = "#f97316" if is_fallback else "#22c55e"
-            src_icon   = "⚠️" if is_fallback else "✅"
-            src_note   = " — Open-Meteo was unavailable" if is_fallback else ""
+            src_icon   = "🌡" if is_estimated else ("⚠️" if is_fallback else "✅")
+            src_note   = " — Open-Meteo was unavailable" if ("fallback" in wx_source.lower() and not is_estimated) else ""
             canada_tag = ' &nbsp;·&nbsp; <span style="color:#f87171">🍁 Canadian algorithm active</span>' if is_canada else ""
             st.markdown(
                 f'<div style="font-family:var(--mono);font-size:11px;color:{src_color};'
