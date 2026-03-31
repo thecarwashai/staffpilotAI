@@ -483,6 +483,104 @@ table.sp-table tr:hover td { background: rgba(255,255,255,0.03); }
 [data-testid="stVegaLiteChart"] { display: none !important; }
 [data-testid="stHorizontalBlock"] { gap: 12px !important; }
 hr { border-color: var(--border) !important; }
+
+/* ── Chart legend ── */
+.sp-chart-legend {
+    display: flex;
+    gap: 16px;
+    padding: 10px 0 6px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    flex-wrap: wrap;
+    row-gap: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════
+   MOBILE RESPONSIVE  ( ≤ 640px )
+   ═══════════════════════════════════════════════════════ */
+@media (max-width: 640px) {
+
+  /* Tighter page padding */
+  .block-container,
+  [data-testid="block-container"],
+  [data-testid="stAppViewBlockContainer"] {
+    padding: 0 10px !important;
+  }
+
+  /* Nav — stack logo + badge vertically */
+  .sp-nav {
+    padding: 12px 12px !important;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .sp-logo-text { font-size: 13px !important; }
+  .sp-badge { font-size: 10px !important; padding: 3px 9px !important; }
+
+  /* Hero text */
+  .sp-section-h2 { font-size: 19px !important; }
+  .sp-section-desc { font-size: 13px !important; }
+
+  /* Card tighter */
+  .sp-card { padding: 16px 14px 14px !important; }
+
+  /* Metrics: 2×2 grid on mobile instead of 4×1 */
+  .sp-metrics-row {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 8px !important;
+  }
+  .sp-metric { padding: 14px 14px !important; }
+  .sp-metric-value { font-size: 21px !important; }
+  .sp-metric-label { font-size: 9px !important; }
+  .sp-metric-sub { font-size: 11px !important; }
+
+  /* Confidence banner wraps */
+  .sp-confidence { flex-wrap: wrap; font-size: 12px !important; padding: 10px 14px !important; }
+
+  /* Table: hide less-critical columns, make text smaller */
+  table.sp-table th,
+  table.sp-table td { padding: 10px 10px !important; font-size: 11px !important; }
+
+  /* Hide High Temp + Precip columns on very small screens */
+  table.sp-table th:nth-child(6),
+  table.sp-table td:nth-child(6),
+  table.sp-table th:nth-child(7),
+  table.sp-table td:nth-child(7) { display: none !important; }
+
+  /* Cars bar narrower */
+  .cars-bar-bg { max-width: 48px !important; }
+  .cars-val { min-width: 28px !important; font-size: 11px !important; }
+
+  /* Staff pips smaller */
+  .pip { width: 7px !important; height: 7px !important; }
+
+  /* Weather pill smaller */
+  .wx-pill { font-size: 10px !important; padding: 2px 7px !important; }
+
+  /* Chart legend wraps tighter */
+  .sp-chart-legend { gap: 10px !important; font-size: 10px !important; }
+
+  /* Table wrap horizontal scroll as last resort */
+  .sp-table-wrap { overflow-x: auto !important; }
+
+  /* Canada note smaller */
+  .sp-canada-note { font-size: 11px !important; padding: 10px 12px !important; }
+
+  /* Disclaimer */
+  .sp-disclaimer { font-size: 11px !important; }
+}
+
+/* Tablet ( 641px – 900px ) */
+@media (min-width: 641px) and (max-width: 900px) {
+  .sp-metrics-row {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 10px !important;
+  }
+  table.sp-table th,
+  table.sp-table td { padding: 11px 12px !important; font-size: 12px !important; }
+  .sp-card { padding: 20px 18px !important; }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1471,8 +1569,16 @@ def canada_algorithm_note_html() -> str:
 """
 
 
-def mini_chart_html(rows: List[Dict], max_cars: int) -> str:
-    """SVG sparkline bar chart."""
+def _legend_dot(color, label):
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:6px">'
+        f'<span style="width:10px;height:10px;background:{color};border-radius:2px;display:inline-block"></span>'
+        f'{label}</span>'
+    )
+
+
+def mini_chart_html(rows, max_cars):
+    """SVG sparkline bar chart — mobile-friendly, legend bug fixed."""
     W, H = 900, 120
     pad_l, pad_r, pad_t, pad_b = 10, 10, 10, 24
     inner_w = W - pad_l - pad_r
@@ -1483,15 +1589,12 @@ def mini_chart_html(rows: List[Dict], max_cars: int) -> str:
     rect_w = bar_w - bar_gap
 
     max_row_cars = max(r["cars"] for r in rows)
-
     bars = ""
     labels = ""
     for i, r in enumerate(rows):
         h = max(4, int((r["cars"] / max(max_cars, 1)) * inner_h))
         x = pad_l + i * bar_w + bar_gap / 2
         y = pad_t + inner_h - h
-
-        # Color logic: blizzard/heavy snow = purple, rain = red, busiest = amber, normal = gray
         wx = r.get("wx_cat", "clear")
         if wx == "blizzard":
             color = "#a78bfa"
@@ -1503,31 +1606,35 @@ def mini_chart_html(rows: List[Dict], max_cars: int) -> str:
             color = "#f5a623"
         else:
             color = "#374151"
-
         bars += f'<rect x="{x:.1f}" y="{y}" width="{rect_w:.1f}" height="{h}" rx="3" fill="{color}" opacity="0.85"/>'
         cx = x + rect_w / 2
         labels += f'<text x="{cx:.1f}" y="{H - 4}" text-anchor="middle" font-size="10" fill="#6b7280" font-family="IBM Plex Mono, monospace">{r["dow"][:3]}</text>'
 
     is_canada = rows[0].get("country") == "Canada"
-    snow_legend = """
-    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#818cf8;border-radius:2px;display:inline-block"></span>Snow Day</span>
-    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#a78bfa;border-radius:2px;display:inline-block"></span>Blizzard</span>
-    """ if is_canada else ""
+    legend_items = [
+        _legend_dot("#f5a623", "Busiest"),
+        _legend_dot("#ef4444", "Rain (≥60%)"),
+    ]
+    if is_canada:
+        legend_items.append(_legend_dot("#818cf8", "Snow Day"))
+        legend_items.append(_legend_dot("#a78bfa", "Blizzard"))
+    legend_items.append(_legend_dot("#374151", "Normal"))
+    legend_html = " ".join(legend_items)
 
-    return f"""
-<div class="sp-table-wrap" style="padding:20px 24px 8px">
-  <div class="sp-table-header">Daily Volume Trend</div>
-  <svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">
-    {bars}{labels}
-  </svg>
-  <div style="display:flex;gap:20px;padding:10px 0 6px;font-size:11px;color:var(--muted);font-family:var(--mono);flex-wrap:wrap">
-    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#f5a623;border-radius:2px;display:inline-block"></span>Busiest</span>
-    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#ef4444;border-radius:2px;display:inline-block"></span>Rain Day (≥60%)</span>
-    {snow_legend}
-    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#374151;border-radius:2px;display:inline-block"></span>Normal</span>
-  </div>
-</div>
-"""
+    svg = (
+        f'<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" '
+        f'style="width:100%;height:auto;display:block">{bars}{labels}</svg>'
+    )
+    return (
+        '<div class="sp-table-wrap" style="padding:20px 24px 8px">'
+        '<div class="sp-table-header">Daily Volume Trend</div>'
+        + svg
+        + f'<div class="sp-chart-legend">{legend_html}</div>'
+        + '</div>'
+    )
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
