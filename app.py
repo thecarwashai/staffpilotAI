@@ -49,6 +49,7 @@ st.markdown("""
     --green:   #22c55e;
     --red:     #ef4444;
     --blue:    #60a5fa;
+    --canada:  #d52b1e;
     --text:    #f0f2f7;
     --sub:     #c4c9d4;
     --muted:   #9ca3af;
@@ -95,7 +96,7 @@ p, span, div, label, li { color: var(--text) !important; }
 #MainMenu, footer, header { visibility: hidden; }
 section[data-testid="stSidebar"] { display: none !important; }
 
-/* ── Nav bar — full-bleed strip, content pinned to max-w ── */
+/* ── Nav bar ── */
 .sp-nav {
     display: flex;
     align-items: center;
@@ -131,6 +132,50 @@ section[data-testid="stSidebar"] { display: none !important; }
     border-radius: 20px; padding: 4px 12px;
     letter-spacing: 0.06em; white-space: nowrap;
 }
+
+/* ── Country toggle ── */
+.sp-country-toggle {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 20px;
+    width: fit-content;
+}
+.sp-country-btn {
+    padding: 10px 24px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    border: none;
+    background: var(--surf2);
+    color: var(--muted);
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.sp-country-btn.active-usa {
+    background: rgba(245,166,35,0.15);
+    color: var(--accent);
+    border-right: 1px solid var(--border);
+}
+.sp-country-btn.active-canada {
+    background: rgba(213,43,30,0.15);
+    color: #f87171;
+}
+.sp-canada-note {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: rgba(213,43,30,0.07);
+    border: 1px solid rgba(213,43,30,0.25);
+    border-radius: 8px; padding: 12px 16px;
+    font-size: 12px; color: var(--sub);
+    margin-bottom: 16px; line-height: 1.6;
+}
+.sp-canada-note strong { color: #fca5a5; }
 
 /* ── Page wrapper ── */
 .sp-page { padding: 32px 0 80px; }
@@ -228,6 +273,41 @@ div[data-testid="stWidgetLabel"] p,
     font-size: 13px !important;
     color: var(--sub) !important;
     margin-bottom: 4px !important;
+}
+
+/* ── Radio buttons (country selector) ── */
+div[data-testid="stRadio"] > label {
+    font-family: var(--mono) !important;
+    font-size: 13px !important;
+    color: var(--sub) !important;
+}
+div[data-testid="stRadio"] [data-testid="stWidgetLabel"] p {
+    font-size: 13px !important; color: var(--sub) !important;
+}
+div[data-testid="stRadio"] > div {
+    display: flex !important; gap: 0 !important;
+    background: var(--surf2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+    width: fit-content !important;
+    padding: 0 !important;
+}
+div[data-testid="stRadio"] > div > label {
+    padding: 10px 20px !important;
+    font-family: var(--mono) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.06em !important;
+    border-right: 1px solid var(--border) !important;
+    color: var(--muted) !important;
+    cursor: pointer !important;
+    transition: all 0.15s !important;
+}
+div[data-testid="stRadio"] > div > label:last-child { border-right: none !important; }
+div[data-testid="stRadio"] > div > label:has(input:checked) {
+    background: rgba(245,166,35,0.15) !important;
+    color: var(--accent) !important;
 }
 
 /* ── Button ── */
@@ -362,10 +442,19 @@ table.sp-table tr:hover td { background: rgba(255,255,255,0.03); }
 .wx-pill.clear { border-color:#22c55e; color:#86efac; background:rgba(34,197,94,0.08); }
 .wx-pill.cold  { border-color:#818cf8; color:#c7d2fe; background:rgba(129,140,248,0.08); }
 .wx-pill.heat  { border-color:#f97316; color:#fdba74; background:rgba(249,115,22,0.08); }
+.wx-pill.snow  { border-color:#a5b4fc; color:#c7d2fe; background:rgba(165,180,252,0.10); }
+.wx-pill.blizzard { border-color:#ef4444; color:#fca5a5; background:rgba(239,68,68,0.10); }
 
 .impact-neg { color: #f87171; font-weight: 600; }
 .impact-pos { color: #4ade80; font-weight: 600; }
 .impact-neu { color: var(--muted); }
+
+/* ── Canada flag accent ── */
+.sp-canada-accent {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px;
+    color: #f87171; letter-spacing: 0.08em;
+}
 
 /* ── Disclaimer ── */
 .sp-disclaimer {
@@ -416,6 +505,21 @@ DOW_MULT = {
 QUICK_CPSH = 9.5
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CANADA POSTAL CODE NORMALIZER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def normalize_canadian_postal(raw: str) -> str:
+    """
+    Canadian postal codes are 6 chars: A1A 1A1.
+    Accepts with or without space; uppercases; inserts space if missing.
+    Returns normalized string, or original if it doesn't look Canadian.
+    """
+    code = raw.strip().upper().replace(" ", "")
+    if len(code) == 6 and code[0].isalpha() and code[1].isdigit():
+        return f"{code[:3]} {code[3:]}"
+    return raw.strip()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # WEATHER HELPERS  (Primary: Open-Meteo  |  Fallback: WeatherAPI.com)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -428,11 +532,20 @@ WEATHERAPI_KEY: str = st.secrets.get("WEATHERAPI_KEY", "")
 # ── Geocoding ────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
-def get_lat_lon(location: str) -> Tuple[float, float]:
-    """Resolve ZIP / city to (lat, lon) via Open-Meteo geocoding."""
+def get_lat_lon(location: str, country: str = "USA") -> Tuple[float, float]:
+    """
+    Resolve ZIP / postal code / city to (lat, lon) via Open-Meteo geocoding.
+    For Canada, appends ', Canada' to improve geocoding accuracy.
+    """
+    query = location
+    if country == "Canada":
+        # If it looks like a bare postal code (no comma), append country
+        if "," not in location:
+            query = f"{location}, Canada"
+
     url = "https://geocoding-api.open-meteo.com/v1/search"
     try:
-        res = requests.get(url, params={"name": location, "count": 1},
+        res = requests.get(url, params={"name": query, "count": 1},
                            headers=HEADERS, timeout=15)
     except requests.exceptions.Timeout:
         raise RuntimeError("Geocoding request timed out. Check your network.")
@@ -442,6 +555,11 @@ def get_lat_lon(location: str) -> Tuple[float, float]:
         raise RuntimeError(f"Geocoding API returned HTTP {res.status_code}.")
     results = res.json().get("results") or []
     if not results:
+        if country == "Canada":
+            raise RuntimeError(
+                "Canadian location not found. Try your city name (e.g. 'Toronto') "
+                "or forward sortation area (e.g. 'M5V, Canada')."
+            )
         raise RuntimeError("Location not found. Try a ZIP code or 'City, State'.")
     return float(results[0]["latitude"]), float(results[0]["longitude"])
 
@@ -461,23 +579,28 @@ def _normalize_daily(daily: Dict[str, Any]) -> Dict[str, Any]:
     daily["temperature_2m_max"] = [
         float(v) if v is not None else 65.0 for v in daily["temperature_2m_max"]
     ]
+    # snowfall_sum may not always exist; default to zeros
+    snow_raw = daily.get("snowfall_sum") or [None] * n
+    daily["snowfall_sum"] = [
+        float(v) if v is not None else 0.0 for v in snow_raw
+    ]
     return daily
 
 
 def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
-    """Fetch 7-day forecast from Open-Meteo with up to 2 retries."""
+    """Fetch 7-day forecast from Open-Meteo with up to 2 retries. Also requests snowfall."""
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
         "longitude": lon,
-        "daily": "precipitation_probability_max,precipitation_sum,temperature_2m_max",
+        "daily": "precipitation_probability_max,precipitation_sum,temperature_2m_max,snowfall_sum",
         "temperature_unit": "fahrenheit",
         "precipitation_unit": "inch",
         "forecast_days": 7,
         "timezone": "auto",
     }
     last_err = "Unknown error"
-    for attempt in range(2):           # try twice before giving up
+    for attempt in range(2):
         try:
             res = requests.get(url, params=params, headers=HEADERS, timeout=20)
         except requests.exceptions.Timeout:
@@ -485,7 +608,7 @@ def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
             continue
         except requests.exceptions.ConnectionError as e:
             last_err = f"Connection error: {e}"
-            break                      # connection refused won't fix itself on retry
+            break
 
         if res.status_code != 200:
             try:
@@ -513,14 +636,9 @@ def _fetch_open_meteo(lat: float, lon: float) -> Dict[str, Any]:
     raise RuntimeError(f"Open-Meteo: {last_err}")
 
 
-# ── Fallback 1: wttr.in (free, no key required) ───────────────────────────────
+# ── Fallback 1: wttr.in ───────────────────────────────────────────────────────
 
 def _fetch_wttr(lat: float, lon: float) -> Dict[str, Any]:
-    """
-    Fetch 7-day forecast from wttr.in JSON API.
-    Completely free, no key required — good Streamlit Cloud fallback.
-    Normalises to the same dict shape as Open-Meteo.
-    """
     url = f"https://wttr.in/{lat},{lon}"
     params = {"format": "j1"}
     try:
@@ -542,23 +660,22 @@ def _fetch_wttr(lat: float, lon: float) -> Dict[str, Any]:
     if len(weather_days) < 3:
         raise RuntimeError(f"wttr.in only returned {len(weather_days)} days.")
 
-    # wttr.in returns 3 days max on free tier — extend to 7 by cycling the pattern
-    # (good enough for staffing: day 4-7 use day 1-3 weather as an estimate)
     base = weather_days[:]
     while len(base) < 7:
         base.append(base[len(base) % 3])
 
-    times, probs, rains, temps = [], [], [], []
+    times, probs, rains, temps, snows = [], [], [], [], []
     base_date = datetime.utcnow().date()
     for i, day in enumerate(base[:7]):
         times.append((base_date + timedelta(days=i)).isoformat())
-        # hourly entries → derive max temp (F) and total precip (mm→in)
         hourly = day.get("hourly", [])
         temp_max = max((float(h.get("tempF", 65)) for h in hourly), default=65.0)
         precip_mm = sum(float(h.get("precipMM", 0)) for h in hourly)
+        snow_cm = sum(float(h.get("snowDepthCM", 0)) for h in hourly)
         chance = max((float(h.get("chanceofrain", 0)) for h in hourly), default=0.0)
         temps.append(temp_max)
         rains.append(round(precip_mm / 25.4, 3))
+        snows.append(round(snow_cm / 2.54, 3))  # cm → inches
         probs.append(chance)
 
     return {
@@ -566,16 +683,13 @@ def _fetch_wttr(lat: float, lon: float) -> Dict[str, Any]:
         "precipitation_probability_max":  probs,
         "precipitation_sum":              rains,
         "temperature_2m_max":             temps,
+        "snowfall_sum":                   snows,
     }
 
 
-# ── Fallback 2: WeatherAPI.com (requires key) ────────────────────────────────
+# ── Fallback 2: WeatherAPI.com ────────────────────────────────────────────────
 
 def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
-    """
-    Fetch 7-day forecast from WeatherAPI.com.
-    Skipped silently if WEATHERAPI_KEY is not set.
-    """
     if not WEATHERAPI_KEY:
         raise RuntimeError("WeatherAPI.com key not configured (WEATHERAPI_KEY missing from secrets).")
 
@@ -599,12 +713,13 @@ def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
     if len(forecast_days) < 7:
         raise RuntimeError(f"WeatherAPI.com only returned {len(forecast_days)} days.")
 
-    times, probs, rains, temps = [], [], [], []
+    times, probs, rains, temps, snows = [], [], [], [], []
     for day in forecast_days:
         times.append(day["date"])
         d = day.get("day", {})
         probs.append(float(d.get("daily_chance_of_rain", 0)))
         rains.append(round(float(d.get("totalprecip_mm", 0.0)) / 25.4, 3))
+        snows.append(round(float(d.get("totalsnow_cm", 0.0)) / 2.54, 3))
         temps.append(float(d.get("maxtemp_f", 65.0)))
 
     return {
@@ -612,17 +727,12 @@ def _fetch_weatherapi(lat: float, lon: float) -> Dict[str, Any]:
         "precipitation_probability_max":  probs,
         "precipitation_sum":              rains,
         "temperature_2m_max":             temps,
+        "snowfall_sum":                   snows,
     }
 
 
-# ── Public interface — tries all three sources in order ──────────────────────
-
 @st.cache_data(ttl=1800)
 def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
-    """
-    Tries Open-Meteo → wttr.in → WeatherAPI.com in order.
-    Returns the first successful result. Raises only if all three fail.
-    """
     errors: Dict[str, str] = {}
 
     sources = [
@@ -644,10 +754,13 @@ def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FORECAST LOGIC
+# FORECAST LOGIC — USA vs CANADA ALGORITHMS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def weather_impact_percent(prob: float, rain_in: float, temp_f: float) -> Tuple[int, str, str]:
+# ── USA algorithm (original) ─────────────────────────────────────────────────
+
+def weather_impact_percent_usa(prob: float, rain_in: float, temp_f: float) -> Tuple[int, str, str]:
+    """US-tuned: rain and cold both significantly dampen car wash demand."""
     impact = 0
     reasons = []
     category = "clear"
@@ -673,7 +786,7 @@ def weather_impact_percent(prob: float, rain_in: float, temp_f: float) -> Tuple[
     return int(impact), " + ".join(reasons), category
 
 
-def weather_factor(prob: float, rain_in: float, temp_f: float) -> float:
+def weather_factor_usa(prob: float, rain_in: float, temp_f: float) -> float:
     factor = 1.0
     if prob >= 80 or rain_in >= 0.25:    factor *= 0.55
     elif prob >= 60 or rain_in >= 0.10:  factor *= 0.75
@@ -685,34 +798,191 @@ def weather_factor(prob: float, rain_in: float, temp_f: float) -> float:
     return factor
 
 
-def rebound_boost(prev_prob: float, prev_rain: float) -> float:
+# ── Canada algorithm (snow-aware) ────────────────────────────────────────────
+#
+# Key differences vs USA:
+#  1. Snow tolerance: Canadians are accustomed to winter driving; light–moderate
+#     snow doesn't deter car wash visits as strongly. People actually wash their
+#     cars MORE after road salt / slush exposure.
+#  2. Cold tolerance: Sub-zero temps are normal. Operational concern shifts to
+#     "is the wash physically open?" (freeze risk) rather than customer reluctance.
+#  3. "Ideal temp" window is shifted colder (10°C / 50°F–25°C / 77°F).
+#  4. Post-snow rebound is STRONG — salty slush roads drive a surge the next clear day.
+#  5. Blizzard / whiteout conditions (heavy snow + very cold) do suppress volume.
+
+def _snow_category(snow_in: float, temp_f: float) -> str:
+    """Classify snow severity for Canada."""
+    if snow_in >= 6 and temp_f < 25:
+        return "blizzard"
+    if snow_in >= 3:
+        return "heavy_snow"
+    if snow_in >= 0.5:
+        return "moderate_snow"
+    if snow_in > 0:
+        return "light_snow"
+    return "none"
+
+
+def weather_impact_percent_canada(
+    prob: float, rain_in: float, temp_f: float, snow_in: float
+) -> Tuple[int, str, str]:
+    """
+    Canada-tuned impact.
+    Snow: mild suppressor (customers used to it) UNLESS blizzard.
+    Cold: tolerated down to ~14°F / -10°C before meaningful suppression.
+    Post-snow salt-rebound is handled in forecast_week_quick_canada().
+    Rain: similar to USA but slightly less impact (rain still dirty = wash demand).
+    """
+    impact = 0
+    reasons = []
+    category = "clear"
+
+    snow_cat = _snow_category(snow_in, temp_f)
+
+    # ── Snow effects ──────────────────────────────────────────────────────────
+    if snow_cat == "blizzard":
+        # Roads may close; customers stay home
+        impact -= 50
+        reasons.append("Blizzard")
+        category = "blizzard"
+    elif snow_cat == "heavy_snow":
+        # Significant but Canadians push through; salt demand creates wash motive
+        impact -= 20
+        reasons.append("Heavy Snow")
+        category = "snow"
+    elif snow_cat == "moderate_snow":
+        # Light suppression; also a wash trigger (salt / slush)
+        impact -= 8
+        reasons.append("Moderate Snow")
+        category = "snow"
+    elif snow_cat == "light_snow":
+        # Minimal impact; salt residue actually encourages washing
+        impact -= 2
+        reasons.append("Light Snow")
+        category = "snow"
+
+    # ── Rain effects (only if no snow dominant) ───────────────────────────────
+    if snow_cat == "none":
+        if prob >= 80 or rain_in >= 0.25:
+            impact -= 38; reasons.append("Heavy Rain"); category = "rain"
+        elif prob >= 60 or rain_in >= 0.10:
+            impact -= 20; reasons.append("Moderate Rain"); category = "rain"
+        elif prob >= 40:
+            impact -= 10; reasons.append("Light Rain"); category = "rain"
+        else:
+            reasons.append("Clear")
+
+    # ── Temperature effects ────────────────────────────────────────────────────
+    # Canadians accept cold; only suppress when genuinely dangerous
+    if temp_f < 14:        # < -10°C — operational freeze risk
+        impact -= 22
+        reasons.append("Extreme Cold")
+        if category == "clear": category = "cold"
+    elif temp_f < 25:      # -3.9°C to -10°C — cold but functional
+        impact -= 10
+        reasons.append("Very Cold")
+        if category == "clear": category = "cold"
+    elif temp_f < 37:      # Just below freezing — common; minimal impact
+        impact -= 4
+        reasons.append("Below Freezing")
+    elif 50 <= temp_f <= 77:  # Ideal Canadian wash weather
+        impact += 7
+        reasons.append("Ideal Temps")
+    elif temp_f > 86:
+        impact -= 4
+        reasons.append("Hot")
+
+    if not reasons:
+        reasons.append("Normal")
+
+    return int(impact), " + ".join(reasons), category
+
+
+def weather_factor_canada(prob: float, rain_in: float, temp_f: float, snow_in: float) -> float:
+    """Canada weather multiplier."""
+    factor = 1.0
+    snow_cat = _snow_category(snow_in, temp_f)
+
+    # Snow
+    if snow_cat == "blizzard":        factor *= 0.50
+    elif snow_cat == "heavy_snow":    factor *= 0.80
+    elif snow_cat == "moderate_snow": factor *= 0.92
+    elif snow_cat == "light_snow":    factor *= 0.98
+
+    # Rain (only when no snow)
+    if snow_cat == "none":
+        if prob >= 80 or rain_in >= 0.25:    factor *= 0.62
+        elif prob >= 60 or rain_in >= 0.10:  factor *= 0.80
+        elif prob >= 40:                     factor *= 0.92
+
+    # Temperature
+    if temp_f < 14:          factor *= 0.78
+    elif temp_f < 25:        factor *= 0.90
+    elif temp_f < 37:        factor *= 0.96
+    elif 50 <= temp_f <= 77: factor *= 1.07
+    elif temp_f > 86:        factor *= 0.97
+
+    return factor
+
+
+# ── Rebound logic ─────────────────────────────────────────────────────────────
+
+def rebound_boost_usa(prev_prob: float, prev_rain: float) -> float:
     if prev_prob >= 80 or prev_rain >= 0.25: return 0.30
     if prev_prob >= 60 or prev_rain >= 0.10: return 0.20
     if prev_prob >= 40: return 0.10
     return 0.0
 
 
-def forecast_week_quick(location: str, min_cars: int, avg_cars: int, max_cars: int) -> List[Dict[str, Any]]:
-    lat, lon = get_lat_lon(location)
+def rebound_boost_canada(prev_snow_in: float, prev_rain: float, prev_prob: float) -> float:
+    """
+    Canada post-event rebound.
+    After snow (especially heavy snow with road salt), rebound is STRONGER than rain.
+    After blizzard, rebound is very strong on the first clear day.
+    """
+    if prev_snow_in >= 6:    return 0.45  # post-blizzard surge
+    if prev_snow_in >= 3:    return 0.35  # heavy snow → salt wash-off demand
+    if prev_snow_in >= 0.5:  return 0.20  # moderate snow
+    if prev_snow_in > 0:     return 0.10  # light snow
+    # Rain rebound (similar to USA but slightly less)
+    if prev_prob >= 80 or prev_rain >= 0.25: return 0.25
+    if prev_prob >= 60 or prev_rain >= 0.10: return 0.15
+    if prev_prob >= 40: return 0.07
+    return 0.0
+
+
+# ── Main forecast builders ────────────────────────────────────────────────────
+
+def forecast_week_quick(location: str, min_cars: int, avg_cars: int, max_cars: int,
+                        country: str = "USA") -> List[Dict[str, Any]]:
+    lat, lon = get_lat_lon(location, country)
     w = get_weather_7d(lat, lon)
     out = []
-    prev_prob = 0.0
-    prev_rain = 0.0
+    prev_prob  = 0.0
+    prev_rain  = 0.0
+    prev_snow  = 0.0
 
     for i in range(7):
         day_iso = w["time"][i]
         prob     = float(w["precipitation_probability_max"][i])
         rain_in  = float(w["precipitation_sum"][i])
         temp_f   = float(w["temperature_2m_max"][i])
+        snow_in  = float(w.get("snowfall_sum", [0]*7)[i])
 
         dow = datetime.fromisoformat(day_iso).strftime("%A")
         dow_factor = DOW_MULT.get(dow, 1.0)
 
-        impact_pct, reason, wx_cat = weather_impact_percent(prob, rain_in, temp_f)
-        wf = weather_factor(prob, rain_in, temp_f)
-
-        if prob < 30 and temp_f > 50:
-            wf *= (1 + rebound_boost(prev_prob, prev_rain))
+        if country == "Canada":
+            impact_pct, reason, wx_cat = weather_impact_percent_canada(prob, rain_in, temp_f, snow_in)
+            wf = weather_factor_canada(prob, rain_in, temp_f, snow_in)
+            # Apply Canada rebound on clear days
+            if (snow_in < 0.5) and (prob < 30) and (temp_f > 25):
+                wf *= (1 + rebound_boost_canada(prev_snow, prev_rain, prev_prob))
+        else:
+            impact_pct, reason, wx_cat = weather_impact_percent_usa(prob, rain_in, temp_f)
+            wf = weather_factor_usa(prob, rain_in, temp_f)
+            if prob < 30 and temp_f > 50:
+                wf *= (1 + rebound_boost_usa(prev_prob, prev_rain))
 
         raw  = avg_cars * dow_factor * wf
         cars = int(max(min_cars, min(raw, max_cars)))
@@ -720,6 +990,9 @@ def forecast_week_quick(location: str, min_cars: int, avg_cars: int, max_cars: i
         peak_hour = cars * 0.12
         staff = math.ceil(peak_hour / QUICK_CPSH) if QUICK_CPSH > 0 else 0
         staff = min(MAX_STAFF, max(0, staff))
+
+        # Celsius for Canadian display
+        temp_c = round((temp_f - 32) * 5 / 9, 1)
 
         out.append({
             "dow":      dow,
@@ -732,15 +1005,22 @@ def forecast_week_quick(location: str, min_cars: int, avg_cars: int, max_cars: i
             "rain_pct": int(prob),
             "rain_in":  round(rain_in, 2),
             "temp_f":   round(temp_f, 1),
+            "temp_c":   temp_c,
+            "snow_in":  round(snow_in, 2),
+            "country":  country,
         })
         prev_prob = prob
         prev_rain = rain_in
+        prev_snow = snow_in
 
     return out
 
 
 def confidence_label(rows: List[Dict]) -> str:
     avg_rain = sum(r["rain_pct"] for r in rows) / len(rows) if rows else 0
+    has_snow = any(r.get("snow_in", 0) > 0 for r in rows)
+    if has_snow and avg_rain >= 50: return "MEDIUM — mixed precip week"
+    if has_snow: return "HIGH — snow expected; salt-rebound modeled"
     if avg_rain >= 60: return "MEDIUM — weather-heavy week"
     if avg_rain >= 35: return "HIGH — some variability"
     return "HIGH — stable conditions"
@@ -771,12 +1051,24 @@ def metrics_html(rows: List[Dict], min_cars: int, max_cars: int) -> str:
     busiest  = max(rows, key=lambda r: r["cars"])
     slowest  = min(rows, key=lambda r: r["cars"])
     rain_days = sum(1 for r in rows if r["rain_pct"] >= 60)
+    snow_days = sum(1 for r in rows if r.get("snow_in", 0) >= 0.5)
     peak_staff = max(r["staff"] for r in rows)
     avg_cars   = int(sum(r["cars"] for r in rows) / len(rows))
     avg_impact = int(sum(r["impact"] for r in rows) / len(rows))
     impact_cls = "red" if avg_impact < 0 else ("green" if avg_impact > 0 else "")
     impact_str = f"{avg_impact:+d}%"
     conf = confidence_label(rows)
+    is_canada = rows[0].get("country") == "Canada"
+
+    # For Canada, show snow days instead of pure rain days
+    if is_canada and snow_days > 0:
+        precip_label = "Snow + Rain Days"
+        precip_val   = f"{snow_days}❄ {rain_days}🌧"
+        precip_sub   = "≥0.5\" snow or ≥60% rain"
+    else:
+        precip_label = "Rain-Impacted Days"
+        precip_val   = str(rain_days)
+        precip_sub   = "≥60% precip probability"
 
     return f"""
 <div class="sp-metrics-row">
@@ -796,9 +1088,9 @@ def metrics_html(rows: List[Dict], min_cars: int, max_cars: int) -> str:
     <div class="sp-metric-sub">{slowest['dow']}</div>
   </div>
   <div class="sp-metric blue">
-    <div class="sp-metric-label">Rain-Impacted Days</div>
-    <div class="sp-metric-value">{rain_days}</div>
-    <div class="sp-metric-sub">≥60% precip probability</div>
+    <div class="sp-metric-label">{precip_label}</div>
+    <div class="sp-metric-value">{precip_val}</div>
+    <div class="sp-metric-sub">{precip_sub}</div>
   </div>
 </div>
 <div class="sp-confidence">
@@ -809,7 +1101,9 @@ def metrics_html(rows: List[Dict], min_cars: int, max_cars: int) -> str:
 
 
 def table_html(rows: List[Dict], max_cars: int) -> str:
+    is_canada = rows[0].get("country") == "Canada"
     rows_html = ""
+
     for r in rows:
         # Cars bar
         bar_pct = int((r["cars"] / max(max_cars, 1)) * 100)
@@ -827,7 +1121,8 @@ def table_html(rows: List[Dict], max_cars: int) -> str:
         staff_cell = f'<div class="staff-pips">{pips}</div><span style="font-size:11px;color:var(--muted);margin-left:8px">{r["staff"]}</span>'
 
         # Weather pill
-        wx_icons = {"rain": "🌧", "cold": "🥶", "heat": "🌡", "clear": "☀️"}
+        wx_icons = {"rain": "🌧", "cold": "🥶", "heat": "🌡", "clear": "☀️",
+                    "snow": "❄️", "blizzard": "🌨"}
         icon = wx_icons.get(r["wx_cat"], "☀️")
         wx_cell = f'<span class="wx-pill {r["wx_cat"]}">{icon} {r["reason"]}</span>'
 
@@ -839,6 +1134,19 @@ def table_html(rows: List[Dict], max_cars: int) -> str:
         else:
             imp_cell = f'<span class="impact-neu">{r["impact"]:+d}%</span>'
 
+        # Temperature display — Canada shows °C primary, °F secondary
+        if is_canada:
+            temp_display = f'{r["temp_c"]}°C <span style="color:var(--muted);font-size:11px">({r["temp_f"]}°F)</span>'
+        else:
+            temp_display = f'{r["temp_f"]}°F'
+
+        # Precip display — Canada adds snow column
+        if is_canada:
+            snow_str = f' · {r["snow_in"]}" ❄' if r.get("snow_in", 0) > 0 else ""
+            precip_display = f'{r["rain_pct"]}% · {r["rain_in"]}"{snow_str}'
+        else:
+            precip_display = f'{r["rain_pct"]}% · {r["rain_in"]}"'
+
         rows_html += f"""
 <tr>
   <td>
@@ -849,9 +1157,12 @@ def table_html(rows: List[Dict], max_cars: int) -> str:
   <td style="display:flex;align-items:center">{staff_cell}</td>
   <td>{imp_cell}</td>
   <td>{wx_cell}</td>
-  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{r['temp_f']}°F</td>
-  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{r['rain_pct']}% · {r['rain_in']}"</td>
+  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{temp_display}</td>
+  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{precip_display}</td>
 </tr>"""
+
+    temp_col_label = "High Temp (°C)" if is_canada else "High Temp"
+    precip_col_label = "Precip / Snow" if is_canada else "Precip"
 
     return f"""
 <div class="sp-table-wrap">
@@ -864,12 +1175,28 @@ def table_html(rows: List[Dict], max_cars: int) -> str:
         <th>Peak Staff</th>
         <th>Weather Impact</th>
         <th>Conditions</th>
-        <th>High Temp</th>
-        <th>Precip</th>
+        <th>{temp_col_label}</th>
+        <th>{precip_col_label}</th>
       </tr>
     </thead>
     <tbody>{rows_html}</tbody>
   </table>
+</div>
+"""
+
+
+def canada_algorithm_note_html() -> str:
+    return """
+<div class="sp-canada-note">
+  <span style="font-size:18px">🍁</span>
+  <div>
+    <strong>Canadian Weather Model Active</strong> — Snow tolerance adjusted for Canadian driving habits.
+    Light–moderate snow applies minimal suppression (customers are accustomed to winter roads and road salt
+    actively <em>increases</em> wash demand). Heavy snow reduces volume moderately; blizzard conditions
+    apply strong suppression. Post-snow rebound is modeled as stronger than rain rebound.
+    Temperature thresholds shifted: extreme cold penalty only applies below −10°C (14°F).
+    Temperatures display in °C.
+  </div>
 </div>
 """
 
@@ -885,16 +1212,37 @@ def mini_chart_html(rows: List[Dict], max_cars: int) -> str:
     bar_gap = bar_w * 0.28
     rect_w = bar_w - bar_gap
 
+    max_row_cars = max(r["cars"] for r in rows)
+
     bars = ""
     labels = ""
     for i, r in enumerate(rows):
         h = max(4, int((r["cars"] / max(max_cars, 1)) * inner_h))
         x = pad_l + i * bar_w + bar_gap / 2
         y = pad_t + inner_h - h
-        color = "#ef4444" if r["rain_pct"] >= 60 else ("#f5a623" if r["cars"] == max(rr["cars"] for rr in rows) else "#374151")
+
+        # Color logic: blizzard/heavy snow = purple, rain = red, busiest = amber, normal = gray
+        wx = r.get("wx_cat", "clear")
+        if wx == "blizzard":
+            color = "#a78bfa"
+        elif wx == "snow":
+            color = "#818cf8"
+        elif r["rain_pct"] >= 60:
+            color = "#ef4444"
+        elif r["cars"] == max_row_cars:
+            color = "#f5a623"
+        else:
+            color = "#374151"
+
         bars += f'<rect x="{x:.1f}" y="{y}" width="{rect_w:.1f}" height="{h}" rx="3" fill="{color}" opacity="0.85"/>'
         cx = x + rect_w / 2
         labels += f'<text x="{cx:.1f}" y="{H - 4}" text-anchor="middle" font-size="10" fill="#6b7280" font-family="IBM Plex Mono, monospace">{r["dow"][:3]}</text>'
+
+    is_canada = rows[0].get("country") == "Canada"
+    snow_legend = """
+    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#818cf8;border-radius:2px;display:inline-block"></span>Snow Day</span>
+    <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#a78bfa;border-radius:2px;display:inline-block"></span>Blizzard</span>
+    """ if is_canada else ""
 
     return f"""
 <div class="sp-table-wrap" style="padding:20px 24px 8px">
@@ -902,9 +1250,10 @@ def mini_chart_html(rows: List[Dict], max_cars: int) -> str:
   <svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">
     {bars}{labels}
   </svg>
-  <div style="display:flex;gap:20px;padding:10px 0 6px;font-size:11px;color:var(--muted);font-family:var(--mono)">
+  <div style="display:flex;gap:20px;padding:10px 0 6px;font-size:11px;color:var(--muted);font-family:var(--mono);flex-wrap:wrap">
     <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#f5a623;border-radius:2px;display:inline-block"></span>Busiest</span>
     <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#ef4444;border-radius:2px;display:inline-block"></span>Rain Day (≥60%)</span>
+    {snow_legend}
     <span style="display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:#374151;border-radius:2px;display:inline-block"></span>Normal</span>
   </div>
 </div>
@@ -934,9 +1283,34 @@ st.markdown("""
 # ── Input card ────────────────────────────────────────────────────────────────
 st.markdown('<div class="sp-card"><div class="sp-card-title">Location &amp; Demand Parameters</div>', unsafe_allow_html=True)
 
+# Country selector
+country = st.radio(
+    "Country",
+    options=["🇺🇸  USA", "🍁  Canada"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+is_canada = "Canada" in country
+country_code = "Canada" if is_canada else "USA"
+
+# Location input — placeholder adapts to country
+if is_canada:
+    loc_placeholder = "e.g. M5V or Toronto, ON"
+    loc_label = "Postal Code or City"
+    st.markdown(canada_algorithm_note_html(), unsafe_allow_html=True)
+else:
+    loc_placeholder = "e.g. 30301 or Atlanta, GA"
+    loc_label = "ZIP Code or City"
+
 col_loc, col_blank = st.columns([2, 2])
 with col_loc:
-    location = st.text_input("ZIP Code or City", placeholder="e.g. 30301 or Atlanta, GA", label_visibility="visible")
+    location_raw = st.text_input(loc_label, placeholder=loc_placeholder, label_visibility="visible")
+
+# Normalize Canadian postal code
+if is_canada and location_raw:
+    location = normalize_canadian_postal(location_raw)
+else:
+    location = location_raw.strip() if location_raw else ""
 
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -960,25 +1334,32 @@ with btn_col:
 st.markdown("</div>", unsafe_allow_html=True)  # close sp-card
 
 # ── Disclaimer ───────────────────────────────────────────────────────────────
-st.markdown("""
+canada_extra = " Snow rebound modeling accounts for post-salt demand surges." if is_canada else ""
+st.markdown(f"""
 <div class="sp-disclaimer">
   <strong style="color:var(--text)">Accuracy note:</strong>
   This forecast uses weather data + industry day-of-week curves. It does <em>not</em> account for
   active promotions, local road closures, nearby competition, or event-driven spikes.
-  Treat <strong>Expected Change %</strong> as directional guidance, not a hard prediction.
+  Treat <strong>Expected Change %</strong> as directional guidance, not a hard prediction.{canada_extra}
 </div>
 """, unsafe_allow_html=True)
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if run:
     if not location.strip():
-        st.markdown('<div class="sp-error">⚠ Please enter a ZIP code or city before generating.</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="sp-error">⚠ Please enter a {"postal code or city" if is_canada else "ZIP code or city"} before generating.</div>',
+            unsafe_allow_html=True
+        )
     elif not (min_cars <= avg_cars <= max_cars):
         st.markdown('<div class="sp-error">⚠ Fix guardrail values before generating.</div>', unsafe_allow_html=True)
     else:
         with st.spinner("Fetching weather data…"):
             try:
-                rows = forecast_week_quick(location.strip(), int(min_cars), int(avg_cars), int(max_cars))
+                rows = forecast_week_quick(
+                    location.strip(), int(min_cars), int(avg_cars), int(max_cars),
+                    country=country_code
+                )
             except Exception as e:
                 st.markdown(f'<div class="sp-error">⚠ {e}</div>', unsafe_allow_html=True)
                 rows = []
@@ -986,16 +1367,16 @@ if run:
         if rows:
             st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
 
-            # Show which weather source was used (fallback makes this visible)
             wx_source = st.session_state.get("_wx_source", "Open-Meteo")
             is_fallback = "fallback" in wx_source.lower()
             src_color  = "#f97316" if is_fallback else "#22c55e"
             src_icon   = "⚠️" if is_fallback else "✅"
             src_note   = " — Open-Meteo was unavailable" if is_fallback else ""
+            canada_tag = ' &nbsp;·&nbsp; <span style="color:#f87171">🍁 Canadian algorithm active</span>' if is_canada else ""
             st.markdown(
                 f'<div style="font-family:var(--mono);font-size:11px;color:{src_color};'
                 f'margin-bottom:16px;letter-spacing:0.08em">'
-                f'{src_icon} Weather source: <strong>{wx_source}</strong>{src_note}</div>',
+                f'{src_icon} Weather source: <strong>{wx_source}</strong>{src_note}{canada_tag}</div>',
                 unsafe_allow_html=True,
             )
 
