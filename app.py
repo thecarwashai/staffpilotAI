@@ -544,26 +544,66 @@ CANADA_FSA_FALLBACK: Dict[str, Tuple[float, float, str]] = {
 }
 
 
-def normalize_canadian_postal(raw: str) -> str:
+CANADA_PROVINCES = {
+    "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT",
+}
+
+
+def _extract_canadian_postal(raw: str) -> str:
     """
-    Normalise to 'A1A 1A1' format (with space).
-    Also accepts just an FSA like 'M5V'.
-    Returns original string unchanged if it doesn't look Canadian.
+    Extract postal code from any common Canadian input, including:
+      'T8N 5E1'      -> 'T8N 5E1'
+      'T8N5E1'       -> 'T8N 5E1'
+      'AB T8N 5E1'   -> 'T8N 5E1'   (province prefix)
+      'AB, T8N 5E1'  -> 'T8N 5E1'
+      'T8N'          -> 'T8N'        (FSA only)
+      'Calgary, AB'  -> 'Calgary, AB' (city name, returned unchanged)
     """
-    code = raw.strip().upper().replace(" ", "")
-    if len(code) == 6 and code[0].isalpha() and code[1].isdigit():
-        return f"{code[:3]} {code[3:]}"
-    # 3-char FSA only (e.g. "M5V") — return as-is, geocoder handles it
-    if len(code) == 3 and code[0].isalpha() and code[1].isdigit() and code[2].isalpha():
+    text = raw.strip().upper()
+
+    # Strip leading province abbreviation (e.g. "AB ", "AB, ", "AB- ")
+    for prov in CANADA_PROVINCES:
+        for sep in (prov + " ", prov + ", ", prov + "- ", prov + "-"):
+            if text.startswith(sep):
+                text = text[len(sep):].strip()
+                break
+
+    # Strip trailing province (e.g. "T8N 5E1, AB")
+    for prov in CANADA_PROVINCES:
+        for sep in (", " + prov, " " + prov):
+            if text.endswith(sep):
+                text = text[: -len(sep)].strip()
+                break
+
+    # Collapse spaces/hyphens between the two halves
+    code = text.replace(" ", "").replace("-", "")
+
+    # Full 6-char postal code A1A1A1
+    if (len(code) == 6
+            and code[0].isalpha() and code[1].isdigit() and code[2].isalpha()
+            and code[3].isdigit() and code[4].isalpha() and code[5].isdigit()):
+        return code[:3] + " " + code[3:]
+
+    # 3-char FSA A1A
+    if (len(code) == 3
+            and code[0].isalpha() and code[1].isdigit() and code[2].isalpha()):
         return code
+
+    # Nothing matched — probably a city name, return original
     return raw.strip()
+
+
+def normalize_canadian_postal(raw: str) -> str:
+    """Public wrapper — always returns the best cleaned representation."""
+    return _extract_canadian_postal(raw)
 
 
 def _looks_like_canadian_postal(s: str) -> bool:
     """True if string looks like a full postal code (A1A 1A1) or FSA (A1A)."""
     code = s.strip().upper().replace(" ", "")
     if len(code) == 6:
-        return code[0].isalpha() and code[1].isdigit() and code[2].isalpha()
+        return (code[0].isalpha() and code[1].isdigit() and code[2].isalpha()
+                and code[3].isdigit() and code[4].isalpha() and code[5].isdigit())
     if len(code) == 3:
         return code[0].isalpha() and code[1].isdigit() and code[2].isalpha()
     return False
