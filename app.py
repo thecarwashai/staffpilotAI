@@ -330,6 +330,17 @@ div.stButton > button:hover {
     transform: translateY(-1px) !important;
 }
 
+/* ── Secondary button (Past Week toggle) ── */
+div.stButton > button[kind="secondary"] {
+    background: var(--surf2) !important;
+    color: var(--sub) !important;
+    border: 1px solid var(--border) !important;
+}
+div.stButton > button[kind="secondary"]:hover {
+    background: var(--border) !important;
+    color: var(--text) !important;
+}
+
 /* ── Spinner ── */
 [data-testid="stStatusWidget"], .stSpinner > div {
     background: transparent !important; color: var(--muted) !important;
@@ -402,6 +413,10 @@ div.stButton > button:hover {
     content: ''; display: inline-block;
     width: 3px; height: 13px; background: var(--accent); border-radius: 2px;
 }
+/* Past-week variant — blue accent bar */
+.sp-table-header.past::before {
+    background: var(--blue);
+}
 table.sp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.sp-table th {
     font-family: var(--mono); font-size: 10px;
@@ -473,6 +488,42 @@ table.sp-table tr:hover td { background: rgba(255,255,255,0.03); }
     color: #fca5a5; font-size: 13px; font-family: var(--mono);
     white-space: pre-wrap;
 }
+
+/* ── Section divider for Past Week section ── */
+.sp-section-divider {
+    margin: 40px 0 24px;
+    border: none;
+    border-top: 1px solid var(--border);
+    position: relative;
+}
+.sp-section-divider::before {
+    content: '◆';
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg);
+    padding: 0 12px;
+    color: var(--border);
+    font-size: 14px;
+}
+
+/* ── Past week intro ── */
+.sp-past-intro {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    background: rgba(96,165,250,0.06);
+    border: 1px solid rgba(96,165,250,0.22);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    font-size: 13px;
+    color: var(--sub);
+    line-height: 1.6;
+}
+.sp-past-intro strong { color: #93c5fd; }
+.sp-past-intro-icon { font-size: 18px; flex-shrink: 0; }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -568,6 +619,9 @@ hr { border-color: var(--border) !important; }
 
   /* Disclaimer */
   .sp-disclaimer { font-size: 11px !important; }
+
+  /* Past intro */
+  .sp-past-intro { font-size: 12px !important; padding: 10px 14px !important; }
 }
 
 /* Tablet ( 641px – 900px ) */
@@ -1122,6 +1176,256 @@ def get_weather_7d(lat: float, lon: float) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PAST-WEEK WEATHER (observed data, last 7 days)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Uses Open-Meteo's `past_days` parameter on the standard forecast endpoint,
+# which returns recent observed/reanalysis data going back up to 92 days.
+# Falls back to WeatherAPI.com history endpoint (1 call per day).
+# Falls back to climate-normal estimate when both fail.
+
+def _fetch_open_meteo_past(lat: float, lon: float) -> Dict[str, Any]:
+    """
+    Fetch the last 7 days of observed weather from Open-Meteo.
+    Uses past_days=7 + forecast_days=0 to get yesterday → 7 days ago.
+    """
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "precipitation_sum,temperature_2m_max,temperature_2m_min,snowfall_sum",
+        "temperature_unit": "fahrenheit",
+        "precipitation_unit": "inch",
+        "past_days": 7,
+        "forecast_days": 1,   # API requires forecast_days >= 1
+        "timezone": "auto",
+    }
+    last_err = "Unknown error"
+    for attempt in range(2):
+        try:
+            res = requests.get(url, params=params, headers=HEADERS, timeout=20)
+        except requests.exceptions.Timeout:
+            last_err = f"Timed out (attempt {attempt + 1})"
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_err = f"Connection error: {e}"
+            break
+
+        if res.status_code != 200:
+            try:
+                detail = res.json().get("reason", res.text[:120])
+            except Exception:
+                detail = res.text[:120]
+            last_err = f"HTTP {res.status_code}: {detail}"
+            break
+
+        daily = res.json().get("daily")
+        if not daily or "time" not in daily:
+            last_err = "No daily data in past-weather response"
+            break
+
+        # Take only the past 7 days (drop the bonus forecast day at the end)
+        times_full = daily["time"]
+        today_iso = datetime.utcnow().date().isoformat()
+        # Keep only entries strictly before today
+        past_indices = [i for i, t in enumerate(times_full) if t < today_iso]
+        if len(past_indices) < 7:
+            last_err = f"Only got {len(past_indices)} past days from Open-Meteo"
+            break
+        past_indices = past_indices[-7:]  # last 7
+
+        def _slice(key, default):
+            arr = daily.get(key) or [None] * len(times_full)
+            return [float(arr[i]) if arr[i] is not None else default for i in past_indices]
+
+        return {
+            "time":               [times_full[i] for i in past_indices],
+            "precipitation_sum":  _slice("precipitation_sum", 0.0),
+            "temperature_2m_max": _slice("temperature_2m_max", 65.0),
+            "temperature_2m_min": _slice("temperature_2m_min", 50.0),
+            "snowfall_sum":       _slice("snowfall_sum", 0.0),
+        }
+
+    raise RuntimeError(f"Open-Meteo past: {last_err}")
+
+
+def _fetch_weatherapi_past(lat: float, lon: float) -> Dict[str, Any]:
+    """Fallback: WeatherAPI.com history endpoint (1 call per past day)."""
+    if not WEATHERAPI_KEY:
+        raise RuntimeError("WeatherAPI.com key not configured.")
+
+    times, rains, snows, hi, lo = [], [], [], [], []
+    today = datetime.utcnow().date()
+
+    for delta in range(7, 0, -1):  # 7 days ago → 1 day ago (chronological)
+        target = (today - timedelta(days=delta)).isoformat()
+        url = "https://api.weatherapi.com/v1/history.json"
+        params = {"key": WEATHERAPI_KEY, "q": f"{lat},{lon}", "dt": target}
+        try:
+            res = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"WeatherAPI.com history error: {e}")
+        if res.status_code != 200:
+            raise RuntimeError(f"WeatherAPI.com history HTTP {res.status_code} on {target}")
+        days = res.json().get("forecast", {}).get("forecastday", [])
+        if not days:
+            raise RuntimeError(f"WeatherAPI.com returned no data for {target}")
+        d = days[0].get("day", {})
+        times.append(target)
+        rains.append(round(float(d.get("totalprecip_mm", 0.0)) / 25.4, 3))
+        snows.append(round(float(d.get("totalsnow_cm", 0.0)) / 2.54, 3))
+        hi.append(float(d.get("maxtemp_f", 65.0)))
+        lo.append(float(d.get("mintemp_f", 50.0)))
+
+    return {
+        "time":               times,
+        "precipitation_sum":  rains,
+        "temperature_2m_max": hi,
+        "temperature_2m_min": lo,
+        "snowfall_sum":       snows,
+    }
+
+
+def _past_climate_estimate(lat: float, lon: float) -> Dict[str, Any]:
+    """Last-ditch fallback: climate-normal estimate for past 7 days."""
+    zone = _climate_zone(lat, lon)
+    normals = _CLIMATE_NORMALS[zone]
+    month_idx = datetime.utcnow().month - 1
+    base_temp, _base_prob, base_rain, base_snow = normals[month_idx]
+
+    times, rains, snows, hi, lo = [], [], [], [], []
+    today = datetime.utcnow().date()
+    for delta in range(7, 0, -1):
+        t_off, _p_off, r_off = _DAY_OFFSETS[(7 - delta) % len(_DAY_OFFSETS)]
+        d = today - timedelta(days=delta)
+        times.append(d.isoformat())
+        temp = max(-40.0, base_temp + t_off)
+        rain = max(0.0, base_rain + r_off)
+        snow = base_snow if temp < 34 else 0.0
+        hi.append(round(temp, 1))
+        lo.append(round(temp - 14, 1))   # rough min ≈ max - 14°F
+        rains.append(round(rain, 3))
+        snows.append(round(snow, 2))
+
+    return {
+        "time":               times,
+        "precipitation_sum":  rains,
+        "temperature_2m_max": hi,
+        "temperature_2m_min": lo,
+        "snowfall_sum":       snows,
+    }
+
+
+@st.cache_data(ttl=3600)
+def get_weather_past_7d(lat: float, lon: float) -> Dict[str, Any]:
+    """Fetch the last 7 days of observed weather. Cached for 1 hour."""
+    errors: Dict[str, str] = {}
+
+    sources = [
+        ("Open-Meteo (archive)",     lambda: _fetch_open_meteo_past(lat, lon)),
+        ("WeatherAPI.com (history)", lambda: _fetch_weatherapi_past(lat, lon)),
+    ]
+    for name, fetch in sources:
+        try:
+            data = fetch()
+            st.session_state["_wx_past_source"] = name
+            st.session_state["_wx_past_estimated"] = False
+            return data
+        except RuntimeError as e:
+            errors[name] = str(e)
+
+    # Climate-normal fallback
+    try:
+        data = _past_climate_estimate(lat, lon)
+        st.session_state["_wx_past_source"] = f"Climate Estimate ({_climate_zone(lat, lon)} zone)"
+        st.session_state["_wx_past_estimated"] = True
+        st.session_state["_wx_past_errors"] = errors
+        return data
+    except Exception as e:
+        errors["Climate Estimate"] = str(e)
+        bullet = "\n".join(f"• {k}: {v}" for k, v in errors.items())
+        raise RuntimeError(f"All past-weather sources failed:\n{bullet}")
+
+
+def build_past_week_rows(
+    location: str, min_cars: int, avg_cars: int, max_cars: int, country: str = "USA"
+) -> List[Dict[str, Any]]:
+    """
+    Build rows describing the past 7 days. These show what *actually happened* —
+    estimated cars and staff based on the same weather + DOW logic, so the
+    operator can sanity-check staffing decisions against observed conditions.
+    """
+    lat, lon = get_lat_lon(location, country)
+    w = get_weather_past_7d(lat, lon)
+
+    out = []
+    prev_prob = 0.0
+    prev_rain = 0.0
+    prev_snow = 0.0
+
+    for i in range(len(w["time"])):
+        day_iso  = w["time"][i]
+        rain_in  = float(w["precipitation_sum"][i])
+        temp_f   = float(w["temperature_2m_max"][i])
+        temp_lo  = float(w.get("temperature_2m_min", [temp_f - 14] * 7)[i])
+        snow_in  = float(w.get("snowfall_sum", [0] * 7)[i])
+
+        # Past data has no "probability"; infer from observed rainfall
+        # (used only for reason/category classification)
+        if rain_in >= 0.25:   prob = 95.0
+        elif rain_in >= 0.10: prob = 70.0
+        elif rain_in > 0.0:   prob = 45.0
+        else:                 prob = 5.0
+
+        dow = datetime.fromisoformat(day_iso).strftime("%A")
+        dow_factor = DOW_MULT.get(dow, 1.0)
+
+        if country == "Canada":
+            impact_pct, reason, wx_cat = weather_impact_percent_canada(prob, rain_in, temp_f, snow_in)
+            wf = weather_factor_canada(prob, rain_in, temp_f, snow_in)
+            if (snow_in < 0.5) and (prob < 30) and (temp_f > 25):
+                wf *= (1 + rebound_boost_canada(prev_snow, prev_rain, prev_prob))
+        else:
+            impact_pct, reason, wx_cat = weather_impact_percent_usa(prob, rain_in, temp_f)
+            wf = weather_factor_usa(prob, rain_in, temp_f)
+            if prob < 30 and temp_f > 50:
+                wf *= (1 + rebound_boost_usa(prev_prob, prev_rain))
+
+        raw  = avg_cars * dow_factor * wf
+        cars = int(max(min_cars, min(raw, max_cars)))
+
+        peak_hour = cars * 0.12
+        staff = math.ceil(peak_hour / QUICK_CPSH) if QUICK_CPSH > 0 else 0
+        staff = min(MAX_STAFF, max(0, staff))
+
+        temp_c = round((temp_f - 32) * 5 / 9, 1)
+        temp_lo_c = round((temp_lo - 32) * 5 / 9, 1)
+
+        out.append({
+            "dow":        dow,
+            "date":       day_iso,
+            "cars":       cars,
+            "staff":      staff,
+            "impact":     impact_pct,
+            "reason":     reason,
+            "wx_cat":     wx_cat,
+            "rain_pct":   int(prob),
+            "rain_in":    round(rain_in, 2),
+            "temp_f":     round(temp_f, 1),
+            "temp_c":     temp_c,
+            "temp_lo_f":  round(temp_lo, 1),
+            "temp_lo_c":  temp_lo_c,
+            "snow_in":    round(snow_in, 2),
+            "country":    country,
+        })
+        prev_prob = prob
+        prev_rain = rain_in
+        prev_snow = snow_in
+
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # FORECAST LOGIC — USA vs CANADA ALGORITHMS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1553,6 +1857,98 @@ def table_html(rows: List[Dict], max_cars: int) -> str:
 """
 
 
+def past_week_table_html(rows: List[Dict], max_cars: int) -> str:
+    """
+    Render past-7-days observed weather + retro-projected demand.
+    Visually distinct from the forecast table (blue accent vs amber).
+    """
+    is_canada = rows[0].get("country") == "Canada"
+    rows_html = ""
+
+    for r in rows:
+        # Cars bar — blue tint for "past" data
+        bar_pct = int((r["cars"] / max(max_cars, 1)) * 100)
+        cars_cell = f"""
+<div class="cars-bar-wrap">
+  <span class="cars-val">{r['cars']}</span>
+  <div class="cars-bar-bg"><div class="cars-bar-fill" style="width:{bar_pct}%;background:#60a5fa"></div></div>
+</div>"""
+
+        # Staff pips
+        pips = "".join(
+            f'<div class="pip{"" if j < r["staff"] else " empty"}" style="background:{"#60a5fa" if j < r["staff"] else "transparent"}"></div>'
+            for j in range(MAX_STAFF)
+        )
+        staff_cell = f'<div class="staff-pips">{pips}</div><span style="font-size:11px;color:var(--muted);margin-left:8px">{r["staff"]}</span>'
+
+        # Weather pill
+        wx_icons = {"rain": "🌧", "cold": "🥶", "heat": "🌡", "clear": "☀️",
+                    "snow": "❄️", "blizzard": "🌨"}
+        icon = wx_icons.get(r["wx_cat"], "☀️")
+        wx_cell = f'<span class="wx-pill {r["wx_cat"]}">{icon} {r["reason"]}</span>'
+
+        # Impact
+        if r["impact"] < 0:
+            imp_cell = f'<span class="impact-neg">{r["impact"]:+d}%</span>'
+        elif r["impact"] > 0:
+            imp_cell = f'<span class="impact-pos">{r["impact"]:+d}%</span>'
+        else:
+            imp_cell = f'<span class="impact-neu">{r["impact"]:+d}%</span>'
+
+        # Temperature display — show observed high/low
+        if is_canada:
+            temp_display = (
+                f'{r["temp_c"]}°C / {r["temp_lo_c"]}°C '
+                f'<span style="color:var(--muted);font-size:11px">({r["temp_f"]}/{r["temp_lo_f"]}°F)</span>'
+            )
+        else:
+            temp_display = f'{r["temp_f"]}° / {r["temp_lo_f"]}°F'
+
+        # Precip display — past data shows observed inches, no probability
+        if is_canada:
+            snow_str = f' · {r["snow_in"]}" ❄' if r.get("snow_in", 0) > 0 else ""
+            precip_display = f'{r["rain_in"]}" rain{snow_str}'
+        else:
+            precip_display = f'{r["rain_in"]}" rain'
+
+        rows_html += f"""
+<tr>
+  <td>
+    <div class="day-name">{r['dow']}</div>
+    <div class="day-date">{r['date']}</div>
+  </td>
+  <td>{cars_cell}</td>
+  <td style="display:flex;align-items:center">{staff_cell}</td>
+  <td>{imp_cell}</td>
+  <td>{wx_cell}</td>
+  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{temp_display}</td>
+  <td style="font-family:var(--mono);font-size:12px;color:var(--muted)">{precip_display}</td>
+</tr>"""
+
+    temp_col_label = "High / Low (°C)" if is_canada else "High / Low"
+    precip_col_label = "Observed Precip" if not is_canada else "Precip / Snow"
+
+    return f"""
+<div class="sp-table-wrap">
+  <div class="sp-table-header past">📅 Past 7 Days — Observed Weather</div>
+  <table class="sp-table">
+    <thead>
+      <tr>
+        <th>Day</th>
+        <th>Est. Cars</th>
+        <th>Suggested Staff</th>
+        <th>Weather Impact</th>
+        <th>Conditions</th>
+        <th>{temp_col_label}</th>
+        <th>{precip_col_label}</th>
+      </tr>
+    </thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>
+"""
+
+
 def canada_algorithm_note_html() -> str:
     return """
 <div class="sp-canada-note">
@@ -1721,15 +2117,17 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Results ───────────────────────────────────────────────────────────────────
+# ── Generate / persist forecast in session state ─────────────────────────────
 if run:
     if not location.strip():
         st.markdown(
             f'<div class="sp-error">⚠ Please enter a {"postal code or city" if is_canada else "ZIP code or city"} before generating.</div>',
             unsafe_allow_html=True
         )
+        st.session_state.pop("_forecast_rows", None)
     elif not (min_cars <= avg_cars <= max_cars):
         st.markdown('<div class="sp-error">⚠ Fix guardrail values before generating.</div>', unsafe_allow_html=True)
+        st.session_state.pop("_forecast_rows", None)
     else:
         with st.spinner("Fetching weather data…"):
             try:
@@ -1737,59 +2135,167 @@ if run:
                     location.strip(), int(min_cars), int(avg_cars), int(max_cars),
                     country=country_code
                 )
+                # Persist so the past-week toggle doesn't lose the forecast
+                st.session_state["_forecast_rows"]    = rows
+                st.session_state["_forecast_params"]  = {
+                    "location":     location.strip(),
+                    "min_cars":     int(min_cars),
+                    "avg_cars":     int(avg_cars),
+                    "max_cars":     int(max_cars),
+                    "country_code": country_code,
+                    "is_canada":    is_canada,
+                }
+                # Clear any stale past-week data when a new forecast is generated
+                st.session_state.pop("_past_rows", None)
             except Exception as e:
                 st.markdown(f'<div class="sp-error">⚠ {e}</div>', unsafe_allow_html=True)
-                rows = []
+                st.session_state.pop("_forecast_rows", None)
 
-        if rows:
-            st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
+# ── Render forecast (if we have one in session state) ────────────────────────
+rows = st.session_state.get("_forecast_rows")
+params = st.session_state.get("_forecast_params", {})
 
-            # Geo fallback warning (shown when postal code resolved via FSA prefix table)
-            geo_fallback = st.session_state.pop("_geo_fallback", None)
-            if geo_fallback:
-                st.markdown(
-                    f'<div style="font-family:var(--mono);font-size:11px;color:#f97316;'
-                    f'margin-bottom:10px;letter-spacing:0.08em">'
-                    f'📍 Postal code resolved to nearest city: <strong>{geo_fallback}</strong> '
-                    f'— weather accuracy within ~50 km</div>',
-                    unsafe_allow_html=True,
+if rows:
+    st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
+
+    # Geo fallback warning (shown when postal code resolved via FSA prefix table)
+    geo_fallback = st.session_state.pop("_geo_fallback", None)
+    if geo_fallback:
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:11px;color:#f97316;'
+            f'margin-bottom:10px;letter-spacing:0.08em">'
+            f'📍 Postal code resolved to nearest city: <strong>{geo_fallback}</strong> '
+            f'— weather accuracy within ~50 km</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Climate-estimate warning banner
+    wx_estimated = st.session_state.get("_wx_estimated", False)
+    if wx_estimated:
+        wx_errors = st.session_state.get("_wx_errors", {})
+        err_lines = " &nbsp;·&nbsp; ".join(
+            f"{k}: {v.split(chr(10))[0][:80]}" for k, v in wx_errors.items()
+        )
+        st.markdown(
+            f'''<div style="background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.35);'
+            f'border-radius:10px;padding:14px 18px;margin-bottom:16px;font-size:13px;color:#fdba74;line-height:1.6">'
+            f'<strong style="color:#fb923c">⚠ Live weather unavailable — using seasonal climate estimates</strong><br>'
+            f'Staffing direction is still reliable, but day-specific rain/snow accuracy is reduced. '
+            f'Add a free <a href="https://www.weatherapi.com/signup.aspx" target="_blank" '
+            f'style="color:#f97316">WeatherAPI.com key</a> to your Streamlit secrets for live data.<br>'
+            f'<span style="font-size:11px;color:#9ca3af;font-family:var(--mono)">{err_lines}</span>'
+            f'</div>''',
+            unsafe_allow_html=True,
+        )
+
+    wx_source = st.session_state.get("_wx_source", "Open-Meteo")
+    is_estimated = st.session_state.get("_wx_estimated", False)
+    is_fallback = "fallback" in wx_source.lower() or is_estimated
+    src_color  = "#f97316" if is_fallback else "#22c55e"
+    src_icon   = "🌡" if is_estimated else ("⚠️" if is_fallback else "✅")
+    src_note   = " — Open-Meteo was unavailable" if ("fallback" in wx_source.lower() and not is_estimated) else ""
+    canada_tag = ' &nbsp;·&nbsp; <span style="color:#f87171">🍁 Canadian algorithm active</span>' if params.get("is_canada") else ""
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:11px;color:{src_color};'
+        f'margin-bottom:16px;letter-spacing:0.08em">'
+        f'{src_icon} Weather source: <strong>{wx_source}</strong>{src_note}{canada_tag}</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(metrics_html(rows, params["min_cars"], params["max_cars"]), unsafe_allow_html=True)
+    st.markdown(mini_chart_html(rows, params["max_cars"]), unsafe_allow_html=True)
+    st.markdown(table_html(rows, params["max_cars"]), unsafe_allow_html=True)
+
+    # ── Past 7 Days section ──────────────────────────────────────────────────
+    st.markdown('<hr class="sp-section-divider">', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="margin-bottom:18px">
+      <div class="sp-section-title" style="color:#60a5fa">📅 Look Back</div>
+      <h2 class="sp-section-h2">Past 7 Days — Observed Weather</h2>
+      <p class="sp-section-desc">
+        See what <em>actually happened</em> last week. Useful for comparing planned staff against
+        observed conditions, or spotting weather patterns to anticipate.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _, past_btn_col, _ = st.columns([1, 2, 1])
+    with past_btn_col:
+        # Toggle button — when clicked, fetches past data and persists to session state
+        if st.session_state.get("_past_rows"):
+            past_label = "🔄 Refresh Past 7 Days"
+        else:
+            past_label = "📅 Show Past 7 Days Weather"
+        load_past = st.button(past_label, key="load_past_btn")
+
+    if load_past:
+        with st.spinner("Fetching past 7 days of weather…"):
+            try:
+                past_rows = build_past_week_rows(
+                    params["location"],
+                    params["min_cars"],
+                    params["avg_cars"],
+                    params["max_cars"],
+                    country=params["country_code"],
                 )
+                st.session_state["_past_rows"] = past_rows
+            except Exception as e:
+                st.markdown(f'<div class="sp-error">⚠ {e}</div>', unsafe_allow_html=True)
+                st.session_state.pop("_past_rows", None)
 
-            # Climate-estimate warning banner
-            wx_estimated = st.session_state.get("_wx_estimated", False)
-            if wx_estimated:
-                wx_errors = st.session_state.get("_wx_errors", {})
-                err_lines = " &nbsp;·&nbsp; ".join(
-                    f"{k}: {v.split(chr(10))[0][:80]}" for k, v in wx_errors.items()
-                )
-                st.markdown(
-                    f'''<div style="background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.35);'
-                    f'border-radius:10px;padding:14px 18px;margin-bottom:16px;font-size:13px;color:#fdba74;line-height:1.6">'
-                    f'<strong style="color:#fb923c">⚠ Live weather unavailable — using seasonal climate estimates</strong><br>'
-                    f'Staffing direction is still reliable, but day-specific rain/snow accuracy is reduced. '
-                    f'Add a free <a href="https://www.weatherapi.com/signup.aspx" target="_blank" '
-                    f'style="color:#f97316">WeatherAPI.com key</a> to your Streamlit secrets for live data.<br>'
-                    f'<span style="font-size:11px;color:#9ca3af;font-family:var(--mono)">{err_lines}</span>'
-                    f'</div>''',
-                    unsafe_allow_html=True,
-                )
+    past_rows = st.session_state.get("_past_rows")
+    if past_rows:
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-            wx_source = st.session_state.get("_wx_source", "Open-Meteo")
-            is_estimated = st.session_state.get("_wx_estimated", False)
-            is_fallback = "fallback" in wx_source.lower() or is_estimated
-            src_color  = "#f97316" if is_fallback else "#22c55e"
-            src_icon   = "🌡" if is_estimated else ("⚠️" if is_fallback else "✅")
-            src_note   = " — Open-Meteo was unavailable" if ("fallback" in wx_source.lower() and not is_estimated) else ""
-            canada_tag = ' &nbsp;·&nbsp; <span style="color:#f87171">🍁 Canadian algorithm active</span>' if is_canada else ""
-            st.markdown(
-                f'<div style="font-family:var(--mono);font-size:11px;color:{src_color};'
-                f'margin-bottom:16px;letter-spacing:0.08em">'
-                f'{src_icon} Weather source: <strong>{wx_source}</strong>{src_note}{canada_tag}</div>',
-                unsafe_allow_html=True,
-            )
+        # Past-week intro card
+        past_total_rain = sum(r["rain_in"] for r in past_rows)
+        past_total_snow = sum(r.get("snow_in", 0) for r in past_rows)
+        past_avg_high = round(sum(r["temp_f"] for r in past_rows) / len(past_rows), 1)
+        past_avg_cars = int(sum(r["cars"] for r in past_rows) / len(past_rows))
 
-            st.markdown(metrics_html(rows, int(min_cars), int(max_cars)), unsafe_allow_html=True)
-            st.markdown(mini_chart_html(rows, int(max_cars)), unsafe_allow_html=True)
-            st.markdown(table_html(rows, int(max_cars)), unsafe_allow_html=True)
+        if params.get("is_canada"):
+            past_avg_high_c = round((past_avg_high - 32) * 5 / 9, 1)
+            temp_summary = f"Avg high <strong>{past_avg_high_c}°C</strong> ({past_avg_high}°F)"
+        else:
+            temp_summary = f"Avg high <strong>{past_avg_high}°F</strong>"
+
+        snow_summary = f" &nbsp;·&nbsp; Total snow <strong>{round(past_total_snow, 1)}\"</strong>" if past_total_snow > 0 else ""
+
+        st.markdown(f"""
+        <div class="sp-past-intro">
+          <span class="sp-past-intro-icon">📊</span>
+          <div>
+            <strong>Last 7 days at a glance</strong> &nbsp;·&nbsp; {temp_summary} &nbsp;·&nbsp;
+            Total rain <strong>{round(past_total_rain, 2)}"</strong>{snow_summary} &nbsp;·&nbsp;
+            Modeled avg cars <strong>{past_avg_cars}/day</strong>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Past-week source indicator
+        past_src = st.session_state.get("_wx_past_source", "Open-Meteo (archive)")
+        past_est = st.session_state.get("_wx_past_estimated", False)
+        past_src_color = "#f97316" if past_est else "#60a5fa"
+        past_src_icon  = "🌡" if past_est else "✅"
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:11px;color:{past_src_color};'
+            f'margin-bottom:14px;letter-spacing:0.08em">'
+            f'{past_src_icon} Past-weather source: <strong>{past_src}</strong></div>',
+            unsafe_allow_html=True,
+        )
+
+        # Past-week table — use the same max_cars scale for consistent bar widths
+        st.markdown(past_week_table_html(past_rows, params["max_cars"]), unsafe_allow_html=True)
+
+        # Footnote
+        st.markdown("""
+        <div class="sp-disclaimer" style="border-left-color:#60a5fa">
+          <strong style="color:var(--text)">How to read this:</strong>
+          "Est. Cars" and "Suggested Staff" apply the same demand model to <em>observed</em> weather
+          from the past week. Compare these against your actual car counts and labor hours to spot
+          days where you were over- or under-staffed relative to what the weather predicted.
+        </div>
+        """, unsafe_allow_html=True)
 
 st.markdown("</div>", unsafe_allow_html=True)  # close sp-page
